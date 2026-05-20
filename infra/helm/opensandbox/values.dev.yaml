@@ -1,0 +1,55 @@
+# ============================================================================
+# OpenSandbox Helm Values — DEV ENVIRONMENT OVERRIDES
+# Usage: helm install opensandbox . -f values.yaml -f values.dev.yaml
+# ============================================================================
+
+global:
+  acrHostname: "acropensandboxdev.azurecr.io"
+
+controller:
+  replicaCount: 1  # Save cost in dev — single replica
+  image:
+    # NOTE (Phase 0 task 0.1): Replace with actual image ref after upstream validation.
+    repository: "acropensandboxdev.azurecr.io/opensandbox/controller"
+    tag: "0.1.0-alpha-dev"
+    pullPolicy: Always  # Always pull in dev to pick up latest pushes
+
+  uamiClientId: ""  # Set via --set or CI secret: controller.uamiClientId=<dev-uami-client-id>
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+execd:
+  image:
+    repository: "acropensandboxdev.azurecr.io/opensandbox/execd"
+    tag: "0.1.0-alpha-dev"
+
+imagePreWarm:
+  enabled: true
+  # Minimal curated image set for dev — reduce pull time on dev cluster.
+  images:
+    - "acropensandboxdev.azurecr.io/sandbox/python:3.12-slim"
+    - "acropensandboxdev.azurecr.io/sandbox/node:20-alpine"
+  parallelPullsPerNode: 1
+  parallelPullsClusterWide: 5
+
+ratify:
+  enabled: true
+  trustPolicy:
+    primaryCertSecretName: "ratify-notation-cert-primary-dev"
+    secondaryCertSecretName: "ratify-notation-cert-secondary-dev"
+    registryScope: "acropensandboxdev.azurecr.io"
+
+cilium:
+  defaultDeny: true
+  firewallPrivateIp: ""   # Set via --set after Bicep deploy: cilium.firewallPrivateIp=<ip>
+  kubeDnsClusterIp: "10.96.0.10"
+  installCRDs: false
+
+azurePolicy:
+  allowedRegistry: "acropensandboxdev.azurecr.io"

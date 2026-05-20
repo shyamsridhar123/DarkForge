@@ -1,0 +1,1 @@
+Write a Python script that fetches the first 50 Fibonacci numbers and writes them to a file. Then write a SECOND script that reads that file and verifies the Fibonacci property (F(n) = F(n-1) + F(n-2)) for every number. Run both, in order, and report the verification result.

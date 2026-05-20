@@ -1,0 +1,80 @@
+{{/*
+  cilium-fqdn-allowlist.yaml — Cilium FQDN egress allowlist for sandbox namespaces.
+  Plan ref: RALPLAN-DR v0.3 FINAL, Phase 2, Principle 3
+
+  Applies a CiliumNetworkPolicy in opensandbox-system that is used as a
+  template. The FastAPI provisioner creates per-namespace copies via
+  `helm template` + `kubectl apply` when provisioning user namespaces.
+
+  This template allows egress to the FQDN allowlist defined in
+  .Values.cilium.fqdnAllowlist (default: pypi, npm, go proxy, etc.).
+
+  NOTE: CiliumNetworkPolicy is namespace-scoped. This instance in
+  opensandbox-system acts as the template/reference. Per-namespace copies
+  are created by the provisioner for each ns-* namespace.
+*/}}
+{{- if and .Values.cilium.defaultDeny .Values.cilium.fqdnAllowlist }}
+---
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  # This is the template instance — applied in opensandbox-system as reference.
+  # The provisioner creates a copy named "opensandbox-fqdn-allowlist" in each ns-* namespace.
+  name: {{ include "opensandbox.fullname" . }}-fqdn-allowlist-template
+  namespace: {{ include "opensandbox.systemNamespace" . }}
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: network-policy
+    opensandbox.io/policy-template: "true"
+  annotations:
+    opensandbox.io/template-usage: >
+      The FastAPI provisioner copies this CiliumNetworkPolicy into each ns-*
+      namespace via `helm template --show-only templates/cilium-fqdn-allowlist.yaml`
+      + namespace substitution + `kubectl apply`. Do not apply this template
+      directly to sandbox namespaces — use the provisioner.
+spec:
+  # Applies to all pods in the namespace (empty selector = match all).
+  endpointSelector: {}
+
+  egress:
+    # Allow DNS resolution first (required for FQDN resolution).
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Allow egress to approved package registry FQDNs.
+    # These are resolved by Cilium's DNS proxy (requires Cilium >= 1.8).
+    # NOTE: If Phase 0 task 0.4 reveals Cilium FQDN/L7 is ineffective on Kata,
+    # this policy still applies but enforcement falls back to Azure Firewall
+    # SNI-based filtering (Task 1.5). The FQDN list here and the Firewall
+    # application rules MUST be kept in sync.
+    - toFQDNs:
+        {{- range .Values.cilium.fqdnAllowlist }}
+        - matchName: {{ . | quote }}
+        {{- end }}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
+
+    # Allow egress to Azure Firewall for non-FQDN traffic (L3/L4 fallback).
+    {{- if .Values.cilium.firewallPrivateIp }}
+    - toCIDR:
+        - {{ .Values.cilium.firewallPrivateIp }}/32
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
+    {{- end }}
+{{- end }}

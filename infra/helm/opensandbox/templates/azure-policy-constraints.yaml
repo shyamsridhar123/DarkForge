@@ -1,0 +1,169 @@
+{{/*
+  azure-policy-constraints.yaml — Gatekeeper OPA Constraints for OpenSandbox.
+  Plan ref: RALPLAN-DR v0.3 FINAL, Principle 3 (deny by default at every layer)
+
+  These constraints enforce:
+  1. K8sRequiredImagesSigned — all images must be signed (enforced via Ratify)
+  2. K8sBlockHostPath — deny hostPath volumes (except exempted system components)
+  3. K8sNoPrivilegedContainers — deny privileged containers
+  4. K8sAllowedRegistries — only images from the configured ACR
+  5. K8sRequiredRunAsNonRoot — all containers must run as non-root
+
+  IMPORTANT: Azure Policy / Gatekeeper ConstraintTemplates must be pre-installed
+  on the cluster before these Constraints are applied. The built-in Azure Policy
+  initiative "Kubernetes cluster pod security baseline standards" covers most of
+  these. Configure via Azure Portal → Policy → Assignments → AKS cluster scope.
+
+  Per plan (N-C1): Start with Audit mode; promote to Deny after 7-day clean
+  baseline (documented as runbook step, not gated in IaC for v1).
+*/}}
+
+# ---------------------------------------------------------------------------
+# K8sRequiredImagesSigned — all images must have valid Notation signatures.
+# Pairs with Ratify admission webhook. Ratify validates signatures; this
+# constraint ensures Ratify is queried for every pod in ns-* namespaces.
+# ---------------------------------------------------------------------------
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredImagesSigned
+metadata:
+  name: {{ include "opensandbox.fullname" . }}-require-signed-images
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: azure-policy
+  annotations:
+    # Start in Audit mode; switch to Deny after baseline (see runbooks/policy-promotion.md).
+    opensandbox.io/enforcement-action: audit
+spec:
+  enforcementAction: audit  # Change to "deny" after 7-day clean baseline.
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaceSelector:
+      matchExpressions:
+        - key: "opensandbox.io/sandbox"
+          operator: In
+          values: ["true"]
+  parameters:
+    registry: {{ .Values.azurePolicy.allowedRegistry | default "" | quote }}
+
+# ---------------------------------------------------------------------------
+# K8sBlockHostPath — deny hostPath volumes.
+# Prevents sandbox workloads from accessing host filesystem.
+# The execd DaemonSet is exempted via values (empty hostPathMounts by default).
+# ---------------------------------------------------------------------------
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sBlockHostPath
+metadata:
+  name: {{ include "opensandbox.fullname" . }}-block-hostpath
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: azure-policy
+  annotations:
+    opensandbox.io/enforcement-action: deny
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    # Apply to sandbox namespaces and opensandbox-system.
+    # Exempt kube-system (system DaemonSets legitimately use hostPath).
+    namespaceSelector:
+      matchExpressions:
+        - key: "kubernetes.io/metadata.name"
+          operator: NotIn
+          values:
+            - kube-system
+            - kube-public
+            - azure-arc
+            - gatekeeper-system
+
+# ---------------------------------------------------------------------------
+# K8sNoPrivilegedContainers — deny privileged containers.
+# ---------------------------------------------------------------------------
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sNoPrivilegedContainers
+metadata:
+  name: {{ include "opensandbox.fullname" . }}-no-privileged
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: azure-policy
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaceSelector:
+      matchExpressions:
+        - key: "kubernetes.io/metadata.name"
+          operator: NotIn
+          values:
+            - kube-system
+            - kube-public
+            - azure-arc
+            - gatekeeper-system
+
+# ---------------------------------------------------------------------------
+# K8sAllowedRegistries — only allow images from the configured ACR.
+# ---------------------------------------------------------------------------
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sAllowedRegistries
+metadata:
+  name: {{ include "opensandbox.fullname" . }}-allowed-registries
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: azure-policy
+  annotations:
+    # Start in Audit mode so existing workloads are not broken on first deploy.
+    opensandbox.io/enforcement-action: audit
+spec:
+  enforcementAction: audit  # Change to "deny" after baseline.
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaceSelector:
+      matchExpressions:
+        - key: "kubernetes.io/metadata.name"
+          operator: NotIn
+          values:
+            - kube-system
+            - kube-public
+            - azure-arc
+            - gatekeeper-system
+  parameters:
+    allowedRegistries:
+      {{- if .Values.azurePolicy.allowedRegistry }}
+      - {{ .Values.azurePolicy.allowedRegistry | quote }}
+      {{- end }}
+      # MCR is allowed for system images (AKS node agent, Ratify webhook, etc.)
+      - "mcr.microsoft.com"
+
+# ---------------------------------------------------------------------------
+# K8sRequiredRunAsNonRoot — all containers must run as non-root.
+# ---------------------------------------------------------------------------
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredRunAsNonRoot
+metadata:
+  name: {{ include "opensandbox.fullname" . }}-require-nonroot
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: azure-policy
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaceSelector:
+      matchExpressions:
+        - key: "opensandbox.io/sandbox"
+          operator: In
+          values: ["true"]

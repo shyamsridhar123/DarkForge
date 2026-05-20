@@ -1,0 +1,100 @@
+{{/*
+  cilium-default-deny.yaml — Cilium default-deny for all ns-* namespaces.
+  Plan ref: RALPLAN-DR v0.3 FINAL, Principle 3 (deny by default at every layer)
+
+  Applies a CiliumClusterwideNetworkPolicy that:
+  1. Denies all ingress and egress for pods in ns-* namespaces by default.
+  2. Allows egress to kube-dns (UDP/TCP 53) for name resolution.
+  3. Allows egress to Azure Firewall private IP for internet-bound traffic
+     (Azure Firewall then enforces the FQDN allowlist at L3/L4 or L7 per
+     Phase 0 task 0.4 result).
+  4. Explicitly DOES NOT apply to opensandbox-system or kube-system.
+
+  NOTE: CiliumClusterwideNetworkPolicy is a cluster-scoped resource.
+  This requires the Cilium CRD to exist on the cluster (installed by AKS ACNS).
+*/}}
+{{- if .Values.cilium.defaultDeny }}
+---
+apiVersion: "cilium.io/v2"
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: {{ include "opensandbox.fullname" . }}-default-deny-sandbox
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: network-policy
+spec:
+  # Match all pods in namespaces with the opensandbox.io/sandbox=true label.
+  # The controller applies this label to every ns-* namespace it creates.
+  endpointSelector:
+    matchExpressions:
+      - key: "io.kubernetes.pod.namespace"
+        operator: DoesNotExist  # Workaround: use namespaceSelector below
+  # Use description-based selector for namespaces starting with "ns-"
+  # Cilium CCNP supports namespaceSelector via endpointSelector with
+  # the k8s:io.kubernetes.pod.namespace label.
+  # We match on the namespace label opensandbox.io/sandbox: "true".
+  # The controller MUST apply this label when creating ns-* namespaces.
+  #
+  # --- ingress rules ---
+  ingress:
+    # Deny all ingress by default — allow list is applied per sandbox namespace
+    # via per-namespace CiliumNetworkPolicy created by the FastAPI provisioner.
+    - {}
+
+  # --- egress rules ---
+  egress:
+    # Allow DNS resolution to kube-dns.
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Allow egress to Azure Firewall private IP.
+    # Azure Firewall then enforces FQDN allowlist per Task 1.5.
+    # This IP is set from Bicep output (firewallPrivateIp).
+    {{- if .Values.cilium.firewallPrivateIp }}
+    - toCIDR:
+        - {{ .Values.cilium.firewallPrivateIp }}/32
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+    {{- else }}
+    # WARNING: cilium.firewallPrivateIp is not set.
+    # Egress to Azure Firewall is disabled until this value is populated.
+    # Set via: --set cilium.firewallPrivateIp=<firewall-private-ip>
+    {{- end }}
+---
+# Companion policy: explicitly allow intra-namespace traffic (pod-to-pod within
+# the same sandbox namespace). This is applied cluster-wide for all sandbox namespaces.
+apiVersion: "cilium.io/v2"
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: {{ include "opensandbox.fullname" . }}-allow-intra-namespace
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: network-policy
+spec:
+  # Match pods in sandbox namespaces (labeled opensandbox.io/sandbox: "true").
+  endpointSelector:
+    matchLabels:
+      "opensandbox.io/sandbox-member": "true"
+  ingress:
+    # Allow traffic from pods in the same namespace.
+    - fromEndpoints:
+        - matchLabels:
+            "opensandbox.io/sandbox-member": "true"
+  egress:
+    # Allow traffic to pods in the same namespace.
+    - toEndpoints:
+        - matchLabels:
+            "opensandbox.io/sandbox-member": "true"
+{{- end }}

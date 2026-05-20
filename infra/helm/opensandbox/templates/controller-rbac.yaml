@@ -1,0 +1,140 @@
+{{/*
+  controller-rbac.yaml — Namespace-scoped RBAC for the OpenSandbox controller.
+  Plan ref: RALPLAN-DR v0.3 FINAL — Architect + Critic: namespace-scoped only.
+
+  SCOPE: namespace-scoped Role + RoleBinding.
+  This Role grants the controller permission to manage Pods, ConfigMaps,
+  Secrets, and NetworkPolicies within any ns-* or ns-warm-pool-* namespace.
+
+  IMPORTANT: If Phase 0 task 0.1 reveals that the OpenSandbox upstream
+  controller requires CRD management or other cluster-scoped access, replace
+  this Role with a ClusterRole AND document the deviation in
+  docs/upstream-delta.md with the exact permissions required and why.
+
+  DO NOT grant cluster-admin or wildcard permissions.
+*/}}
+
+# ---------------------------------------------------------------------------
+# Role — opensandbox-controller
+# Applied to each sandbox namespace by the controller itself on namespace
+# creation. We pre-create one Role in opensandbox-system for the controller's
+# own operational namespace, and the controller must create matching Roles in
+# each ns-* namespace it provisions (via the Pod/ConfigMap/Secret permissions
+# below — the controller creates namespaces and their Roles dynamically).
+# ---------------------------------------------------------------------------
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: opensandbox-controller
+  namespace: {{ include "opensandbox.systemNamespace" . }}
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller-rbac
+rules:
+  # Manage sandbox pods within ns-* namespaces.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "delete", "watch"]
+
+  # Manage ConfigMaps (sandbox config, runtime params).
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "get", "list", "delete", "update", "patch"]
+
+  # Manage Secrets (per-user UAMI token refs, etc.).
+  # NOTE (Phase 0 task 0.1): If the controller reads secrets from KV via
+  # csi-secrets-store, it may not need Secret CRUD here.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "list", "delete"]
+
+  # Manage NetworkPolicies within the sandbox namespace.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "get", "list", "delete", "update", "patch"]
+
+  # Events — controller can record events for auditability.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: opensandbox-controller
+  namespace: {{ include "opensandbox.systemNamespace" . }}
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller-rbac
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "opensandbox.controller.serviceAccountName" . }}
+    namespace: {{ include "opensandbox.systemNamespace" . }}
+roleRef:
+  kind: Role
+  name: opensandbox-controller
+  apiGroup: rbac.authorization.k8s.io
+
+# ---------------------------------------------------------------------------
+# ClusterRole — opensandbox-controller-namespace-admin
+# Allows the controller to CREATE and LIST Namespaces cluster-wide.
+# This is the minimal cluster-scope permission required: the controller needs
+# to create ns-* namespaces on demand. It does NOT grant admin inside those
+# namespaces — that is handled by per-namespace Role creation below.
+#
+# NOTE: This is intentionally a ClusterRole bound with a ClusterRoleBinding
+# for namespace management ONLY. It does NOT grant Pod/Secret/etc. access
+# at cluster scope.
+# ---------------------------------------------------------------------------
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: opensandbox-controller-namespace-admin
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller-rbac
+rules:
+  # Create and manage sandbox namespaces.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["create", "get", "list", "delete", "patch", "update"]
+
+  # Controller must be able to create Roles + RoleBindings inside new ns-* namespaces.
+  # This is a standard pattern: a controller that creates namespaces also creates RBAC
+  # inside them. The permission is scoped to Role/RoleBinding only.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["create", "get", "list", "delete", "patch", "update"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: opensandbox-controller-namespace-admin
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller-rbac
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "opensandbox.controller.serviceAccountName" . }}
+    namespace: {{ include "opensandbox.systemNamespace" . }}
+roleRef:
+  kind: ClusterRole
+  name: opensandbox-controller-namespace-admin
+  apiGroup: rbac.authorization.k8s.io
+
+# ---------------------------------------------------------------------------
+# Role template — opensandbox-sandbox-namespace-role
+# This Role is NOT directly applied by Helm. It is applied by the controller
+# dynamically when it creates each ns-* namespace (via the ClusterRole above
+# that allows Role creation). Shown here for reference and for
+# `helm template` snapshot testing.
+#
+# If Phase 0 task 0.1 reveals OpenSandbox upstream requires CRDs/cluster-scope,
+# replace this Role with a ClusterRole and document the deviation in
+# docs/upstream-delta.md.
+# ---------------------------------------------------------------------------
+# (Omitted from direct rendering — the controller creates these dynamically.)

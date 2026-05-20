@@ -1,0 +1,1 @@
+Generate a random 1000-row dataset of (timestamp, temperature_c) for the past 30 days. Compute the daily mean and identify days where the temperature was more than 2σ from the overall mean. Report the dates.

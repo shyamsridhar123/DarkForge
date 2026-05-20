@@ -1,0 +1,99 @@
+{{/*
+  execd-daemonset.yaml — OpenSandbox Execution Daemon DaemonSet
+  Plan ref: RALPLAN-DR v0.3 FINAL, Phase 2
+
+  Runs on every Kata node pool node.
+  - nodeSelector: kata node pool
+  - toleration: runtime=kata:NoSchedule (so it can schedule on Kata nodes)
+  - Does NOT run INSIDE Kata — it uses runc and manages Kata pods externally.
+  - hostPath: EMPTY by default (Azure Policy K8sBlockHostPath will DENY non-empty).
+    NOTE (Phase 0 task 0.1): Validate whether upstream execd requires any
+    hostPath mounts. If yes, add an Azure Policy exemption and document in
+    docs/upstream-delta.md.
+*/}}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "opensandbox.execd.serviceAccountName" . }}
+  namespace: {{ include "opensandbox.systemNamespace" . }}
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: execd
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "opensandbox.fullname" . }}-execd
+  namespace: {{ include "opensandbox.systemNamespace" . }}
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: execd
+spec:
+  selector:
+    matchLabels:
+      {{- include "opensandbox.execd.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        {{- include "opensandbox.execd.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "opensandbox.execd.serviceAccountName" . }}
+
+      # Target: Kata node pool only.
+      nodeSelector:
+        {{- toYaml .Values.execd.nodeSelector | nindent 8 }}
+
+      # Must tolerate runtime=kata:NoSchedule to land on Kata nodes.
+      # Does NOT tolerate pre-warm=pending:NoSchedule — execd will wait until
+      # node pre-warm is complete before it can schedule (desired behavior).
+      tolerations:
+        {{- toYaml .Values.execd.tolerations | nindent 8 }}
+
+      securityContext:
+        {{- toYaml .Values.execd.podSecurityContext | nindent 8 }}
+
+      containers:
+        - name: execd
+          image: {{ include "opensandbox.image" (dict "repository" .Values.execd.image.repository "tag" .Values.execd.image.tag) | quote }}
+          imagePullPolicy: IfNotPresent
+
+          securityContext:
+            {{- toYaml .Values.execd.securityContext | nindent 12 }}
+
+          resources:
+            {{- toYaml .Values.execd.resources | nindent 12 }}
+
+          {{- if .Values.execd.hostPathMounts }}
+          # WARNING: hostPath mounts are present. Azure Policy K8sBlockHostPath
+          # will DENY this pod unless an exemption is configured.
+          # These mounts were explicitly requested via values.execd.hostPathMounts.
+          # Document the necessity in docs/upstream-delta.md.
+          volumeMounts:
+            {{- range .Values.execd.hostPathMounts }}
+            - name: {{ .name }}
+              mountPath: {{ .mountPath }}
+              readOnly: {{ .readOnly | default false }}
+            {{- end }}
+          {{- end }}
+
+      {{- if .Values.execd.hostPathMounts }}
+      volumes:
+        {{- range .Values.execd.hostPathMounts }}
+        - name: {{ .name }}
+          hostPath:
+            path: {{ .hostPath }}
+            {{- if .type }}
+            type: {{ .type }}
+            {{- end }}
+        {{- end }}
+      {{- else }}
+      # No hostPath volumes — compliant with Azure Policy K8sBlockHostPath.
+      # NOTE (Phase 0 task 0.1): If upstream execd requires hostPath mounts,
+      # populate values.execd.hostPathMounts and add Azure Policy exemption.
+      volumes: []
+      {{- end }}

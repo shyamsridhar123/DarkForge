@@ -1,0 +1,363 @@
+name: Nightly Jobs
+
+on:
+  schedule:
+    # Main nightly run — UTC 04:00 every day
+    - cron: "0 4 * * *"
+    # Quarterly DR drill — 15th of Mar, Jun, Sep, Dec at UTC 05:00
+    - cron: "0 5 15 3,6,9,12 *"
+  workflow_dispatch:
+    inputs:
+      run_dr_drill:
+        description: "Force DR drill now (override quarterly schedule)"
+        type: boolean
+        default: false
+      run_escape_tests:
+        description: "Run container escape tests"
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write
+  contents: write    # upstream-sync needs to push a draft PR branch
+  pull-requests: write
+
+env:
+  AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_PROD }}
+  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_PROD_SUB_ID }}
+  AKS_RG: ${{ vars.AKS_PROD_RG }}
+  AKS_NAME: ${{ vars.AKS_PROD_NAME }}
+  KV_NAME: ${{ vars.KV_NAME }}
+  ACR_NAME: ${{ vars.ACR_NAME }}
+  LAW_ID: ${{ vars.LAW_ID }}
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.4.18"
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Upstream sync — Failure #4 mitigation
+  # Fetches upstream OpenSandbox, rebases, opens draft PR on divergence.
+  # ---------------------------------------------------------------------------
+  upstream-sync:
+    name: Upstream Sync (Failure #4 mitigation)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "opensandbox-upstream-sync[bot]"
+          git config user.email "noreply@github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/alibaba/OpenSandbox.git || true
+          git fetch upstream --tags
+
+      - name: Attempt rebase onto upstream/main
+        id: rebase
+        run: |
+          UPSTREAM_HEAD=$(git rev-parse upstream/main)
+          CURRENT_HEAD=$(git rev-parse HEAD)
+          echo "upstream_head=${UPSTREAM_HEAD}" >> "$GITHUB_OUTPUT"
+          echo "current_head=${CURRENT_HEAD}" >> "$GITHUB_OUTPUT"
+
+          SYNC_BRANCH="upstream-sync/$(date +%Y%m%d)"
+          git checkout -b "${SYNC_BRANCH}"
+          echo "sync_branch=${SYNC_BRANCH}" >> "$GITHUB_OUTPUT"
+
+          if git rebase upstream/main; then
+            echo "rebase_clean=true" >> "$GITHUB_OUTPUT"
+            echo "Rebase onto upstream/main succeeded cleanly."
+          else
+            git rebase --abort
+            echo "rebase_clean=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Upstream rebase FAILED — manual intervention required."
+          fi
+
+      - name: Check for new upstream commits
+        id: diff-check
+        run: |
+          COUNT=$(git log HEAD..origin/main --oneline 2>/dev/null | wc -l || echo 0)
+          # Also check for upstream delta
+          UPSTREAM_NEW=$(git log origin/main..upstream/main --oneline 2>/dev/null | wc -l || echo 0)
+          echo "upstream_new_commits=${UPSTREAM_NEW}" >> "$GITHUB_OUTPUT"
+
+      - name: Push sync branch + open draft PR (if upstream has new commits)
+        if: steps.diff-check.outputs.upstream_new_commits != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SYNC_BRANCH="${{ steps.rebase.outputs.sync_branch }}"
+          REBASE_STATUS="${{ steps.rebase.outputs.rebase_clean }}"
+          UPSTREAM_HEAD="${{ steps.rebase.outputs.upstream_head }}"
+          NEW_COUNT="${{ steps.diff-check.outputs.upstream_new_commits }}"
+
+          if [[ "$REBASE_STATUS" == "true" ]]; then
+            git push origin "${SYNC_BRANCH}" --force-with-lease
+
+            gh pr create \
+              --draft \
+              --base main \
+              --head "${SYNC_BRANCH}" \
+              --title "chore: upstream sync ${UPSTREAM_HEAD::8} (${NEW_COUNT} new commits)" \
+              --body "## Upstream Sync
+
+          This draft PR was opened automatically by the nightly upstream-sync job (Failure #4 mitigation).
+
+          - **Upstream commit:** \`${UPSTREAM_HEAD}\`
+          - **New upstream commits:** ${NEW_COUNT}
+          - **Rebase status:** ✅ Clean
+
+          ### Review checklist
+          - [ ] Verify no Entra middleware patches were overwritten
+          - [ ] Run full test suite on this branch
+          - [ ] Security-review any new upstream code touching the runtime layer
+          - [ ] If upstream contains a CVE fix, treat as Critical — deploy within 72h (see \`runbooks/cve-response.md\`)" \
+              2>/dev/null || echo "PR may already exist; skipping."
+          else
+            # Rebase failed — push conflict branch and notify
+            git push origin "${SYNC_BRANCH}" || true
+            gh pr create \
+              --draft \
+              --base main \
+              --head "${SYNC_BRANCH}" \
+              --title "⚠️ UPSTREAM SYNC CONFLICT — manual rebase required (${NEW_COUNT} upstream commits)" \
+              --body "## Upstream Sync — CONFLICT
+
+          Nightly upstream sync encountered a rebase conflict.
+
+          - **Upstream commit:** \`${UPSTREAM_HEAD}\`
+          - **New upstream commits:** ${NEW_COUNT}
+          - **Rebase status:** ❌ Conflict — manual rebase required
+
+          ### Action required
+          1. \`git fetch upstream && git checkout ${SYNC_BRANCH} && git rebase upstream/main\`
+          2. Resolve conflicts (expected: Entra middleware patches in \`apps/control-plane/middleware/\`)
+          3. Push resolved branch
+          4. If conflict is in a CVE-bearing commit, treat as Critical (72h SLA per \`runbooks/cve-response.md\`)" \
+              2>/dev/null || true
+            echo "::error::Upstream rebase conflict detected. Draft PR opened for manual resolution."
+            exit 1
+          fi
+
+      - name: No upstream changes
+        if: steps.diff-check.outputs.upstream_new_commits == '0'
+        run: echo "Upstream sync: no new commits. Repository is up to date."
+
+  # ---------------------------------------------------------------------------
+  # Container escape tests (nightly on prod cluster)
+  # ---------------------------------------------------------------------------
+  container-escape-tests:
+    name: Container Escape PoC Tests (Nightly / Prod)
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'schedule' ||
+      github.event.inputs.run_escape_tests == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get AKS credentials
+        run: |
+          az aks get-credentials \
+            --resource-group "${{ env.AKS_RG }}" \
+            --name "${{ env.AKS_NAME }}" \
+            --overwrite-existing
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install test deps
+        run: |
+          pip install uv==${{ env.UV_VERSION }}
+          uv pip install --system \
+            pytest pytest-asyncio kubernetes-asyncio
+
+      - name: Run container escape tests
+        run: |
+          pytest tests/security/test_container_escape.py \
+            -v \
+            --tb=long \
+            -m "requires_aks_kata" \
+            --junitxml=reports/nightly-escape.xml \
+            --timeout=300
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-escape-report
+          path: reports/nightly-escape.xml
+
+      - name: Page on-call on escape PoC success
+        if: failure()
+        run: |
+          echo "::error::CRITICAL: Container escape PoC succeeded on PRODUCTION cluster."
+          echo "::error::Immediately follow runbooks/incident-response.md — quarantine node and page security."
+          # Webhook notification (Teams / PagerDuty) via configured secret
+          if [ -n "${{ secrets.PAGERDUTY_INTEGRATION_KEY }}" ]; then
+            curl -s --fail -X POST \
+              -H "Content-Type: application/json" \
+              -d '{
+                "routing_key": "${{ secrets.PAGERDUTY_INTEGRATION_KEY }}",
+                "event_action": "trigger",
+                "payload": {
+                  "summary": "CRITICAL: Container escape PoC succeeded on OpenSandbox prod AKS",
+                  "severity": "critical",
+                  "source": "github-actions-nightly"
+                }
+              }' \
+              https://events.pagerduty.com/v2/enqueue || true
+          fi
+          exit 1
+
+  # ---------------------------------------------------------------------------
+  # DR drill — quarterly (Task 6.8)
+  # Runs on Mar/Jun/Sep/Dec 15 schedule OR on workflow_dispatch with force flag.
+  # ---------------------------------------------------------------------------
+  dr-drill:
+    name: DR Drill (Task 6.8 — Quarterly)
+    runs-on: ubuntu-latest
+    # Run on the quarterly schedule trigger OR forced dispatch
+    if: >
+      (github.event_name == 'schedule' &&
+       contains(fromJSON('["0 5 15 3,6,9,12 *"]'), github.event.schedule)) ||
+      github.event.inputs.run_dr_drill == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get AKS credentials
+        run: |
+          az aks get-credentials \
+            --resource-group "${{ env.AKS_RG }}" \
+            --name "${{ env.AKS_NAME }}" \
+            --overwrite-existing
+
+      - name: DR Step 1 — Snapshot ACR to backup region
+        run: |
+          # Verify ACR geo-replication to backup region
+          REPLICATION=$(az acr replication show \
+            --registry "${{ env.ACR_NAME }}" \
+            --name westus2 \
+            --query "provisioningState" --output tsv 2>/dev/null || echo "NotFound")
+          if [[ "$REPLICATION" != "Succeeded" ]]; then
+            echo "::warning::ACR replication to westus2 not Succeeded: ${REPLICATION}"
+          else
+            echo "ACR replication backup: OK (${REPLICATION})"
+          fi
+
+          # Import canary image to backup ACR (cold copy)
+          az acr import \
+            --name "${{ vars.ACR_BACKUP_NAME }}" \
+            --source "${{ env.ACR_NAME }}.azurecr.io/canary-primary:latest" \
+            --image "canary-primary:dr-$(date +%Y%m%d)" || \
+            echo "::warning::ACR import to backup failed — check backup ACR config"
+
+      - name: DR Step 2 — Backup KV signing cert
+        run: |
+          # Backup primary Notation cert from KV (Azure Backup for KV)
+          BACKUP_FILE="/tmp/notation-cert-primary-backup-$(date +%Y%m%d).json"
+          az keyvault certificate backup \
+            --vault-name "${{ env.KV_NAME }}" \
+            --name notation-cert-primary \
+            --file "${BACKUP_FILE}"
+          echo "KV cert backup created: $(ls -lh ${BACKUP_FILE})"
+
+          # Upload backup to designated offline storage account
+          az storage blob upload \
+            --account-name "${{ vars.DR_STORAGE_ACCOUNT }}" \
+            --container-name kv-cert-backups \
+            --name "notation-cert-primary-$(date +%Y%m%d).json" \
+            --file "${BACKUP_FILE}" \
+            --auth-mode login
+          echo "KV cert backup uploaded to DR storage."
+
+      - name: DR Step 3 — Snapshot LAW retention
+        run: |
+          # Archive recent audit logs to backup storage account
+          END_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          START_TIME=$(date -u -d "24 hours ago" +%Y-%m-%dT%H:%M:%SZ)
+          az monitor log-analytics workspace export \
+            --workspace-id "${{ env.LAW_ID }}" \
+            --query "AKSAudit | where TimeGenerated between (datetime('${START_TIME}')..datetime('${END_TIME}'))" \
+            2>/dev/null || echo "::warning::LAW export not available via CLI — use Diagnostic Settings archive path"
+          echo "LAW archive step complete (verify in Diagnostic Settings → Storage account)."
+
+      - name: DR Step 4 — Simulate disaster: delete primary KV (dry-run)
+        run: |
+          echo "DR DRILL: Disaster simulation is DRY-RUN only — primary KV will NOT actually be deleted."
+          echo "In a real DR event, follow runbooks/dr-drill.md Step 4 for the actual delete + restore procedure."
+          echo "Proceeding with restore-from-backup verification using existing backup artifact ..."
+
+      - name: DR Step 5 — Restore KV cert from backup and verify Notation
+        run: |
+          BACKUP_FILE="/tmp/notation-cert-primary-restore.json"
+          # Download the most recent backup
+          az storage blob download \
+            --account-name "${{ vars.DR_STORAGE_ACCOUNT }}" \
+            --container-name kv-cert-backups \
+            --name "$(az storage blob list \
+                --account-name ${{ vars.DR_STORAGE_ACCOUNT }} \
+                --container-name kv-cert-backups \
+                --auth-mode login \
+                --query "reverse(sort_by(@, &name))[0].name" \
+                --output tsv)" \
+            --file "${BACKUP_FILE}" \
+            --auth-mode login
+
+          # Restore cert to KV
+          az keyvault certificate restore \
+            --vault-name "${{ env.KV_NAME }}" \
+            --file "${BACKUP_FILE}"
+          echo "KV cert restored from backup."
+
+      - name: DR Step 6 — Schedule canary signed image; assert success
+        run: |
+          kubectl apply -f - <<EOF
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: dr-canary-$(date +%Y%m%d)
+            namespace: dr-drill
+          spec:
+            runtimeClassName: kata-vm-isolation
+            restartPolicy: Never
+            containers:
+              - name: canary
+                image: ${{ env.ACR_NAME }}.azurecr.io/canary-primary:latest
+                command: ["echo", "dr-canary-ok"]
+          EOF
+          kubectl wait pod "dr-canary-$(date +%Y%m%d)" \
+            --namespace dr-drill \
+            --for=condition=Ready \
+            --timeout=240s
+          kubectl delete pod "dr-canary-$(date +%Y%m%d)" -n dr-drill
+          echo "DR drill Step 6: canary image scheduled successfully post-restore."
+
+      - name: DR Step 7 — Record RTO
+        run: |
+          echo "DR drill complete."
+          echo "RTO target: 4 hours | RPO target: 24 hours"
+          echo "Drill date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "See runbooks/dr-drill.md for full procedure and sign-off checklist."

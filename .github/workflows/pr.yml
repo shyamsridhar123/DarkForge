@@ -1,0 +1,362 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID_DEV }}
+  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_DEV_SUB_ID }}
+  BICEP_LOCATION: eastus2
+  BICEP_MAIN: infra/bicep/main.bicep
+  BICEP_PARAMS: infra/bicep/main.dev.parameters.json
+  HELM_CHART: infra/helm/opensandbox
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.4.18"
+  NODE_VERSION: "20"
+  GO_VERSION: "1.22"
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Bicep validate: az bicep build + ARM-TTK lint
+  # ---------------------------------------------------------------------------
+  bicep-validate:
+    name: Bicep Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install az CLI bicep
+        run: az bicep install
+
+      - name: Build (transpile) all Bicep files
+        run: |
+          find infra/bicep -name "*.bicep" | while read f; do
+            echo "Building $f ..."
+            az bicep build --file "$f"
+          done
+
+      - name: Install ARM-TTK
+        run: |
+          curl -sL https://github.com/Azure/arm-ttk/releases/latest/download/arm-ttk.zip \
+            -o /tmp/arm-ttk.zip
+          unzip -q /tmp/arm-ttk.zip -d /tmp/arm-ttk
+
+      - name: Run ARM-TTK on transpiled templates
+        shell: pwsh
+        run: |
+          Import-Module /tmp/arm-ttk/arm-ttk/arm-ttk.psd1
+          $results = @()
+          Get-ChildItem -Path infra/bicep -Filter "*.json" -Recurse | ForEach-Object {
+            $r = Test-AzTemplate -TemplatePath $_.FullName -ErrorAction SilentlyContinue
+            $results += $r
+          }
+          $failures = $results | Where-Object { $_.Passed -eq $false }
+          if ($failures.Count -gt 0) {
+            $failures | Format-Table -AutoSize
+            exit 1
+          }
+          Write-Host "ARM-TTK: all tests passed."
+
+  # ---------------------------------------------------------------------------
+  # Bicep what-if: requires OIDC federation to dev sub
+  # ---------------------------------------------------------------------------
+  bicep-what-if:
+    name: Bicep What-If (dev)
+    runs-on: ubuntu-latest
+    needs: bicep-validate
+    # Only run when dev sub credentials are available
+    if: vars.AZURE_DEV_SUB_ID != ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install az CLI bicep
+        run: az bicep install
+
+      - name: Run deployment what-if
+        run: |
+          az deployment sub what-if \
+            --location "${{ env.BICEP_LOCATION }}" \
+            --template-file "${{ env.BICEP_MAIN }}" \
+            --parameters "${{ env.BICEP_PARAMS }}" \
+            --no-pretty-print \
+            --output json | tee /tmp/whatif-output.json
+
+      - name: Assert no destructive changes
+        run: |
+          python3 - <<'EOF'
+          import json, sys
+          with open('/tmp/whatif-output.json') as f:
+              data = json.load(f)
+          changes = data.get('properties', {}).get('changes', [])
+          destructive = [c for c in changes if c.get('changeType') in ('Delete', 'Unsupported')]
+          if destructive:
+              print(f"ERROR: {len(destructive)} destructive what-if change(s) detected:")
+              for c in destructive:
+                  print(f"  - {c.get('resourceId')} [{c.get('changeType')}]")
+              sys.exit(1)
+          print(f"What-if: {len(changes)} change(s), none destructive.")
+          EOF
+
+  # ---------------------------------------------------------------------------
+  # Helm lint + dry-run
+  # ---------------------------------------------------------------------------
+  helm-lint:
+    name: Helm Lint + Dry-Run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "3.14.4"
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "1.29.0"
+
+      - name: Helm lint
+        run: |
+          helm lint "${{ env.HELM_CHART }}" \
+            --set "global.subscriptionId=00000000-0000-0000-0000-000000000000" \
+            --set "global.tenantId=00000000-0000-0000-0000-000000000000" \
+            --strict
+
+      - name: Helm template + kubectl dry-run (client)
+        run: |
+          helm template opensandbox "${{ env.HELM_CHART }}" \
+            --set "global.subscriptionId=00000000-0000-0000-0000-000000000000" \
+            --set "global.tenantId=00000000-0000-0000-0000-000000000000" \
+            --namespace opensandbox-system \
+          | kubectl apply --dry-run=client -f - \
+            --server-side=false
+
+  # ---------------------------------------------------------------------------
+  # Python SDK tests
+  # ---------------------------------------------------------------------------
+  python-sdk-test:
+    name: Python SDK Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        run: pip install uv==${{ env.UV_VERSION }}
+
+      - name: Install SDK + dev deps
+        run: uv pip install --system -e "sdks/python/[dev]"
+
+      - name: Run pytest
+        run: |
+          pytest sdks/python/tests \
+            -v \
+            --tb=short \
+            --junitxml=reports/python-sdk.xml \
+            -m "not requires_aks_kata and not requires_entra and not slow"
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-sdk-test-report
+          path: reports/python-sdk.xml
+
+  # ---------------------------------------------------------------------------
+  # Control plane tests
+  # ---------------------------------------------------------------------------
+  control-plane-test:
+    name: Control Plane Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        run: pip install uv==${{ env.UV_VERSION }}
+
+      - name: Install control plane + dev deps
+        run: uv pip install --system -e "apps/control-plane/[dev]"
+
+      - name: Run pytest
+        run: |
+          pytest apps/control-plane/tests \
+            -v \
+            --tb=short \
+            --junitxml=reports/control-plane.xml \
+            -m "not requires_aks_kata and not requires_entra and not slow"
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: control-plane-test-report
+          path: reports/control-plane.xml
+
+  # ---------------------------------------------------------------------------
+  # JavaScript SDK tests
+  # ---------------------------------------------------------------------------
+  js-sdk-test:
+    name: JS SDK Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: sdks/js/package-lock.json
+
+      - name: Install deps
+        working-directory: sdks/js
+        run: npm ci
+
+      - name: Run tests
+        working-directory: sdks/js
+        run: npm test -- --reporter=junit --output-file=../../reports/js-sdk.xml
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: js-sdk-test-report
+          path: reports/js-sdk.xml
+
+  # ---------------------------------------------------------------------------
+  # Go SDK tests
+  # ---------------------------------------------------------------------------
+  go-sdk-test:
+    name: Go SDK Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: sdks/go/opensandbox/go.sum
+
+      - name: Run go test
+        working-directory: sdks/go/opensandbox
+        run: |
+          go test ./... -v -timeout 120s \
+            -coverprofile=../../reports/go-sdk-coverage.out \
+            2>&1 | tee ../../reports/go-sdk.txt
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-sdk-test-report
+          path: |
+            reports/go-sdk.txt
+            reports/go-sdk-coverage.out
+
+  # ---------------------------------------------------------------------------
+  # Security escape tests (Task 6.7) — requires live AKS dev cluster
+  # Runs only when AZURE_DEV_SUB_ID secret is set; otherwise reports SKIPPED.
+  # ---------------------------------------------------------------------------
+  security-escape-tests:
+    name: Container Escape PoC Tests (Task 6.7)
+    runs-on: ubuntu-latest
+    needs: [helm-lint]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if AKS credentials available
+        id: check-creds
+        run: |
+          if [ -n "${{ vars.AZURE_DEV_SUB_ID }}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SKIPPED — security-escape-tests require AZURE_DEV_SUB_ID to be set."
+            echo "::notice::Set the AZURE_DEV_SUB_ID variable in GitHub repo/environment settings to enable."
+          fi
+
+      - name: Azure login (OIDC)
+        if: steps.check-creds.outputs.available == 'true'
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          subscription-id: ${{ vars.AZURE_DEV_SUB_ID }}
+
+      - name: Get AKS credentials
+        if: steps.check-creds.outputs.available == 'true'
+        run: |
+          az aks get-credentials \
+            --resource-group "${{ vars.AKS_DEV_RG }}" \
+            --name "${{ vars.AKS_DEV_NAME }}" \
+            --overwrite-existing
+
+      - name: Set up Python
+        if: steps.check-creds.outputs.available == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv + test deps
+        if: steps.check-creds.outputs.available == 'true'
+        run: |
+          pip install uv==${{ env.UV_VERSION }}
+          uv pip install --system \
+            pytest pytest-asyncio kubernetes-asyncio
+
+      - name: Run container escape tests
+        if: steps.check-creds.outputs.available == 'true'
+        run: |
+          pytest tests/security/test_container_escape.py \
+            -v \
+            --tb=short \
+            -m "requires_aks_kata" \
+            --junitxml=reports/escape-tests.xml \
+            --timeout=300
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+
+      - name: Upload escape test report
+        if: always() && steps.check-creds.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: escape-test-report
+          path: reports/escape-tests.xml
+
+      - name: Fail build on escape PoC success
+        if: steps.check-creds.outputs.available == 'true' && failure()
+        run: |
+          echo "::error::CRITICAL: One or more container escape PoCs SUCCEEDED."
+          echo "::error::This means Kata's isolation boundary may be compromised."
+          echo "::error::Page the platform security team immediately."
+          exit 1

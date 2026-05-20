@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "opensandbox-control-plane"
+version = "0.1.0"
+description = "OpenSandbox on Azure — FastAPI control plane"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "msal>=1.30",
+    "azure-identity>=1.17",
+    "azure-keyvault-secrets>=4.8",
+    "azure-eventhub>=5.12",
+    "python-jose[cryptography]>=3.3",
+    "httpx>=0.27",
+    "kubernetes_asyncio>=31",
+    "azure-monitor-opentelemetry>=1.6",
+    "opentelemetry-instrumentation-fastapi>=0.49b0",
+    "structlog>=24.4",
+    "cryptography>=43.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-httpx>=0.32",
+    "respx>=0.21",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "httpx>=0.27",
+    "freezegun>=1.5",
+    "pytest-mock>=3.14",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+select = ["E", "F", "I", "UP", "B", "S", "ANN"]
+ignore = ["ANN101", "ANN102", "S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

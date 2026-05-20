@@ -1,0 +1,258 @@
+# ============================================================================
+# OpenSandbox Helm Values — DEFAULTS
+# Override per-environment using values.<env>.yaml
+# Plan ref: RALPLAN-DR v0.3 FINAL
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# Global
+# ---------------------------------------------------------------------------
+global:
+  # Azure Container Registry hostname — e.g. acropensandboxdev.azurecr.io
+  # All image repositories should be prefixed with this value.
+  acrHostname: ""
+
+# ---------------------------------------------------------------------------
+# Controller — OpenSandbox K8s controller (runs on system node pool)
+# ---------------------------------------------------------------------------
+controller:
+  replicaCount: 2
+
+  image:
+    # NOTE (Phase 0 task 0.1): Populate repository + tag after the upstream
+    # image is confirmed. Do NOT hard-code the upstream image here — the team
+    # will set this via values override after Phase 0 completes.
+    repository: ""   # e.g. acropensandboxdev.azurecr.io/opensandbox/controller
+    tag: ""          # e.g. 0.1.0-alpha
+    pullPolicy: IfNotPresent
+
+  # Workload Identity — the UAMI client ID for the controller's service account.
+  # This is injected as an annotation on the ServiceAccount so the Azure SDK
+  # inside the controller can acquire tokens via OIDC federation.
+  uamiClientId: ""  # Populate from Bicep output: uamiControllerClientId
+
+  # Node placement — controller stays on the system node pool.
+  # Deliberately NOT tolerating the `runtime=kata:NoSchedule` taint so that
+  # the controller never lands on a Kata node where Defender has a coverage gap.
+  nodeSelector:
+    kubernetes.azure.com/agentpool: system
+
+  # Tolerations: empty by design.
+  # The controller must NOT run on Kata nodes (pre-warm taint or runtime taint).
+  tolerations: []
+
+  affinity: {}
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  rbac:
+    # Scope MUST be "namespace" — NOT "cluster".
+    # Architect and Critic both explicitly required namespace-scoped RBAC.
+    # NOTE (Phase 0 task 0.1): If upstream requires cluster-scope access,
+    # change to "cluster" AND document the deviation in docs/upstream-delta.md.
+    scope: namespace
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: 8080
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 3
+
+  podAnnotations: {}
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    seccompProfile:
+      type: RuntimeDefault
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+# ---------------------------------------------------------------------------
+# execd — Execution daemon (runs on Kata node pool as runc container)
+# ---------------------------------------------------------------------------
+execd:
+  image:
+    # NOTE (Phase 0 task 0.1): Populate after upstream image is confirmed.
+    repository: ""   # e.g. acropensandboxdev.azurecr.io/opensandbox/execd
+    tag: ""
+
+  # execd runs on Kata nodes but itself uses runc (it manages Kata pods,
+  # not runs inside one). It must tolerate the `runtime=kata:NoSchedule` taint.
+  nodeSelector:
+    kubernetes.azure.com/agentpool: kata
+
+  tolerations:
+    - key: "runtime"
+      operator: "Equal"
+      value: "kata"
+      effect: "NoSchedule"
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  # hostPath mounts — deliberately empty by default.
+  # Azure Policy (K8sBlockHostPath) will DENY any non-empty hostPath.
+  # If execd genuinely requires a hostPath (e.g. CRI socket), set the path
+  # here AND add an Azure Policy exemption documented in docs/upstream-delta.md.
+  # NOTE (Phase 0 task 0.1): Validate whether upstream execd requires hostPath.
+  hostPathMounts: []
+  # Example (ONLY if upstream requires it after Phase 0 validation):
+  # hostPathMounts:
+  #   - name: cri-sock
+  #     hostPath: /run/containerd/containerd.sock
+  #     mountPath: /run/containerd/containerd.sock
+  #     type: Socket
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    seccompProfile:
+      type: RuntimeDefault
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+# ---------------------------------------------------------------------------
+# Image Pre-warm DaemonSet (Task 2.7)
+# Pulls curated images on Kata nodes before sandbox pods are scheduled.
+# ---------------------------------------------------------------------------
+imagePreWarm:
+  enabled: true
+
+  # List of image references to pre-pull on every Kata node.
+  # Parameterized — populate per environment.
+  # Format: fully-qualified image refs (registry/repo:tag).
+  images: []
+  # Example:
+  # images:
+  #   - acropensandboxdev.azurecr.io/sandbox/python:3.12-slim
+  #   - acropensandboxdev.azurecr.io/sandbox/node:20-alpine
+  #   - acropensandboxdev.azurecr.io/sandbox/golang:1.22-alpine
+
+  # Bandwidth throttle — ACR PE saturation mitigation (Plan risk row).
+  # Max parallel crictl pulls on a single node.
+  parallelPullsPerNode: 2
+
+  # Max parallel crictl pulls across the entire cluster.
+  # The DaemonSet itself can't enforce this directly; the init script
+  # serializes within each node. The cluster-wide limit is enforced by
+  # the ACR PE bandwidth and the node count (parallelPullsPerNode * nodeCount).
+  # This value is surfaced for documentation and future controller enforcement.
+  parallelPullsClusterWide: 30
+
+  image:
+    # Utility image with crictl + kubectl available.
+    repository: "mcr.microsoft.com/azure-cli"
+    tag: "2.59.0"
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# Ratify — Image signature admission (Notation / Azure Key Vault)
+# ---------------------------------------------------------------------------
+ratify:
+  enabled: true
+
+  trustPolicy:
+    # Names of the Kubernetes Secrets that hold the Notation trust certificates.
+    # Secrets are populated by csi-secrets-store + Azure Key Vault provider.
+    # The operator MUST maintain TWO valid certs at all times per the rotation
+    # runbook (14-day overlap, IaC-enforced). See pre-mortem #2 in the plan.
+    primaryCertSecretName: "ratify-notation-cert-primary"
+    secondaryCertSecretName: "ratify-notation-cert-secondary"
+
+    # ACR registry scope — only images from this registry are signature-required.
+    registryScope: ""   # e.g. acropensandboxdev.azurecr.io
+
+  # Values forwarded to the upstream ratify sub-chart.
+  # Refer to https://github.com/deislabs/ratify for the full values schema.
+  ratify:
+    replicaCount: 2
+    provider:
+      azure:
+        enabled: true
+
+# ---------------------------------------------------------------------------
+# Cilium NetworkPolicy
+# ---------------------------------------------------------------------------
+cilium:
+  # If true, render the default-deny CiliumClusterwideNetworkPolicy.
+  defaultDeny: true
+
+  # FQDN allowlist — package registries that sandbox pods may reach.
+  # Applied to all ns-* namespaces via CiliumNetworkPolicy.
+  fqdnAllowlist:
+    - "pypi.org"
+    - "files.pythonhosted.org"
+    - "registry.npmjs.org"
+    - "proxy.golang.org"
+    - "sum.golang.org"
+
+  # Azure Firewall private IP — egress traffic is steered here after Cilium
+  # allows it. Set to the Bicep output firewallPrivateIp.
+  firewallPrivateIp: ""   # e.g. 10.1.3.4
+
+  # kube-dns ClusterIP — allow UDP/TCP 53 for DNS resolution.
+  # Default AKS kube-dns address; override if non-default.
+  kubeDnsClusterIp: "10.96.0.10"
+
+  # Whether to install Cilium CRDs via the chart dependency.
+  # Set false if AKS ACNS has already installed them on the cluster.
+  installCRDs: false
+
+# ---------------------------------------------------------------------------
+# Azure Policy Gatekeeper Constraints
+# ---------------------------------------------------------------------------
+azurePolicy:
+  # ACR hostname allowed for image pulls (maps to K8sAllowedRegistries).
+  allowedRegistry: ""   # e.g. acropensandboxdev.azurecr.io
+
+# ---------------------------------------------------------------------------
+# Namespace prefix — used to match sandbox user namespaces in RBAC + policies.
+# ---------------------------------------------------------------------------
+namespacePrefix: "ns-"
+
+# ---------------------------------------------------------------------------
+# Warm pool namespace prefix (for RBAC Role binding scope)
+# ---------------------------------------------------------------------------
+warmPoolNamespacePrefix: "ns-warm-pool-"

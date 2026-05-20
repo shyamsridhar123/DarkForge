@@ -1,0 +1,119 @@
+{{/*
+  networkpolicy-namespace-template.yaml — Per-namespace NetworkPolicy template.
+  Plan ref: RALPLAN-DR v0.3 FINAL, Phase 2 (FastAPI provisioner integration)
+
+  THIS TEMPLATE IS NOT DIRECTLY APPLIED BY HELM.
+  It is rendered by the FastAPI provisioner via:
+    helm template opensandbox . \
+      --show-only templates/networkpolicy-namespace-template.yaml \
+      --set targetNamespace=ns-<user-oid>
+  The provisioner then substitutes the target namespace and applies via kubectl.
+
+  Policy layers applied per namespace:
+  1. default-deny — deny all ingress and egress.
+  2. egress-dns — allow egress to kube-dns (UDP/TCP 53).
+  3. egress-firewall — allow egress to Azure Firewall private IP.
+  4. intra-namespace — allow pod-to-pod within the same sandbox namespace.
+
+  This is the Kubernetes NetworkPolicy (not CiliumNetworkPolicy) layer.
+  The Cilium policies (cilium-default-deny.yaml, cilium-fqdn-allowlist.yaml)
+  operate in parallel and provide L7/FQDN enforcement.
+*/}}
+
+{{- $targetNs := .Values.targetNamespace | default "ns-PLACEHOLDER" }}
+
+# ===========================================================================
+# NAMESPACE TEMPLATE — rendered per-user by the FastAPI provisioner.
+# Replace "ns-PLACEHOLDER" with the actual user namespace at render time.
+# ===========================================================================
+
+# 1. Default-deny all ingress and egress.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: {{ $targetNs }}
+  labels:
+    opensandbox.io/managed-by: provisioner
+    opensandbox.io/policy-tier: default-deny
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+# 2. Allow egress to kube-dns (required for name resolution).
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns
+  namespace: {{ $targetNs }}
+  labels:
+    opensandbox.io/managed-by: provisioner
+    opensandbox.io/policy-tier: egress-dns
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+# 3. Allow egress to Azure Firewall private IP.
+#    Azure Firewall enforces the FQDN allowlist (Task 1.5).
+{{- if .Values.cilium.firewallPrivateIp }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-firewall
+  namespace: {{ $targetNs }}
+  labels:
+    opensandbox.io/managed-by: provisioner
+    opensandbox.io/policy-tier: egress-firewall
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.cilium.firewallPrivateIp }}/32
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+{{- else }}
+# WARNING: cilium.firewallPrivateIp not set — egress-firewall policy omitted.
+# Set cilium.firewallPrivateIp after Bicep deploy to enable this policy.
+{{- end }}
+
+# 4. Allow intra-namespace pod-to-pod traffic.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-namespace
+  namespace: {{ $targetNs }}
+  labels:
+    opensandbox.io/managed-by: provisioner
+    opensandbox.io/policy-tier: intra-namespace
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow ingress from pods within the same namespace.
+    - from:
+        - podSelector: {}
+  egress:
+    # Allow egress to pods within the same namespace.
+    - to:
+        - podSelector: {}

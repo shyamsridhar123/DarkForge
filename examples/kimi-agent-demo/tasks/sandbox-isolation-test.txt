@@ -1,0 +1,1 @@
+Verify the sandbox is isolated: try to access /etc/passwd, then try to write to /etc/shadow, then try to read environment variables that might leak host info. Report what was accessible vs blocked.

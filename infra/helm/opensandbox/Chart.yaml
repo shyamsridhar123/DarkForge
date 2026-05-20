@@ -1,0 +1,41 @@
+apiVersion: v2
+name: opensandbox
+description: >
+  OpenSandbox runtime on AKS+Kata — Helm chart for the K8s controller,
+  execution daemon, image pre-warm DaemonSet, Cilium NetworkPolicies,
+  Ratify admission configuration, and Gatekeeper Policy Constraints.
+  Implements the consensus plan (RALPLAN-DR v0.3 FINAL).
+
+type: application
+version: 0.1.0
+appVersion: "0.1.0-alpha"
+
+# Minimum Kubernetes version — AKS Kata Pod Sandboxing requires >= 1.29
+kubeVersion: ">=1.29.0"
+
+# NOTE (Phase 0 task 0.1): If OpenSandbox upstream requires CRDs at cluster
+# scope, you may need to add a CRD chart dependency or install CRDs manually
+# before `helm install`. Document the deviation in docs/upstream-delta.md.
+
+dependencies:
+  # Ratify — image signature admission webhook (Notation-based)
+  # Critic NICE-1: pin to a concrete patch version; do NOT use a range.
+  # Current latest stable in the v1.16.x line as of plan date.
+  # Upgrade by bumping this version and running `helm dependency update`.
+  - name: ratify
+    version: "1.16.1"
+    repository: "oci://ghcr.io/deislabs/ratify-chart-dev"
+    alias: ratify
+    condition: ratify.enabled
+
+  # cilium — provides CiliumNetworkPolicy and CiliumClusterwideNetworkPolicy CRDs.
+  # We only use Cilium via AKS ACNS (already installed on the cluster); this
+  # dependency installs the CRD definitions so `helm template` validates our
+  # policy manifests without a live cluster.
+  # If AKS ACNS is confirmed pre-installed, set cilium.crdsOnly=true and
+  # remove this dependency from your production install command.
+  - name: cilium
+    version: "1.15.6"
+    repository: "https://helm.cilium.io/"
+    alias: cilium
+    condition: cilium.installCRDs

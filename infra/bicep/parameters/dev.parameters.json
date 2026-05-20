@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "env": {
+      "value": "dev"
+    },
+    "location": {
+      "value": "eastus2"
+    },
+    "aksAdminGroupObjectIds": {
+      "value": [
+        "<REPLACE-WITH-ENTRA-GROUP-OID-1>"
+      ]
+    },
+    "egressEnforcementTier": {
+      "value": "standard"
+    },
+    "aksServerAppId": {
+      "value": "<REPLACE-AFTER-FIRST-DEPLOY-OR-ENTRA-APP-REG>"
+    },
+    "apiAppId": {
+      "value": "<REPLACE-AFTER-az-ad-app-create>"
+    },
+    "portalAppId": {
+      "value": "<REPLACE-AFTER-az-ad-app-create>"
+    },
+    "lawRetentionDays": {
+      "value": 30
+    }
+  }
+}

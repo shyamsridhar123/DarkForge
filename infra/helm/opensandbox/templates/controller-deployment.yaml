@@ -1,0 +1,131 @@
+{{/*
+  controller-deployment.yaml — OpenSandbox K8s Controller Deployment
+  Plan ref: RALPLAN-DR v0.3 FINAL, Phase 2
+
+  Runs in opensandbox-system namespace on the system node pool.
+  Uses Workload Identity (OIDC federation) — NOT a managed identity directly.
+  RBAC: namespace-scoped Role + RoleBinding (see controller-rbac.yaml).
+  Does NOT tolerate runtime=kata or pre-warm=pending taints.
+*/}}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "opensandbox.systemNamespace" . }}
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    # Prevent Cilium default-deny from blocking system namespace.
+    opensandbox.io/system-namespace: "true"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "opensandbox.controller.serviceAccountName" . }}
+  namespace: {{ include "opensandbox.systemNamespace" . }}
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    # Required label for AKS Workload Identity webhook mutation.
+    azure.workload.identity/use: "true"
+  annotations:
+    # Workload Identity — binds this ServiceAccount to the UAMI.
+    # The UAMI client ID is provisioned by Bicep (uamiControllerClientId output).
+    # NOTE (Phase 0 task 0.1): If the controller needs additional Azure API
+    # access (e.g. ACR pull, KV secrets), ensure the UAMI has the correct
+    # RBAC roles in Bicep before deploying this chart.
+    azure.workload.identity/client-id: {{ required "controller.uamiClientId must be set" .Values.controller.uamiClientId | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "opensandbox.fullname" . }}-controller
+  namespace: {{ include "opensandbox.systemNamespace" . }}
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  replicas: {{ .Values.controller.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "opensandbox.controller.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "opensandbox.controller.selectorLabels" . | nindent 8 }}
+        # Required for the AKS Workload Identity mutating webhook to inject
+        # the projected service account token volume.
+        azure.workload.identity/use: "true"
+      annotations:
+        {{- with .Values.controller.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "opensandbox.controller.serviceAccountName" . }}
+
+      # Security context — runs as non-root.
+      securityContext:
+        {{- toYaml .Values.controller.podSecurityContext | nindent 8 }}
+
+      # nodeSelector — system pool only.
+      # Controller must NOT run on Kata nodes (Defender coverage gap + taints).
+      nodeSelector:
+        {{- toYaml .Values.controller.nodeSelector | nindent 8 }}
+
+      # Tolerations: deliberately empty — do NOT add runtime=kata here.
+      # See values.yaml comment on controller.tolerations.
+      tolerations:
+        {{- toYaml .Values.controller.tolerations | nindent 8 }}
+
+      {{- with .Values.controller.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      containers:
+        - name: controller
+          image: {{ include "opensandbox.image" (dict "repository" .Values.controller.image.repository "tag" .Values.controller.image.tag) | quote }}
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+
+          securityContext:
+            {{- toYaml .Values.controller.securityContext | nindent 12 }}
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          # Liveness probe — controller is alive if /healthz returns 200.
+          livenessProbe:
+            {{- toYaml .Values.controller.livenessProbe | nindent 12 }}
+
+          # Readiness probe — controller is ready for traffic when /readyz returns 200.
+          readinessProbe:
+            {{- toYaml .Values.controller.readinessProbe | nindent 12 }}
+
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+
+          env:
+            - name: OPENSANDBOX_NAMESPACE_PREFIX
+              value: {{ .Values.namespacePrefix | quote }}
+            - name: OPENSANDBOX_WARM_POOL_PREFIX
+              value: {{ .Values.warmPoolNamespacePrefix | quote }}
+            - name: AZURE_CLIENT_ID
+              # Injected by Workload Identity webhook from the ServiceAccount annotation.
+              # Listed here for documentation; the webhook overrides this at admission.
+              value: {{ .Values.controller.uamiClientId | quote }}
+
+          volumeMounts:
+            # Workload Identity projected token — mounted by the webhook automatically.
+            # Explicit mount is only needed if the container references a non-default path.
+            - name: azure-identity-token
+              mountPath: /var/run/secrets/azure/tokens
+              readOnly: true
+
+      volumes:
+        - name: azure-identity-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: azure-identity-token
+                  expirationSeconds: 3600
+                  audience: api://AzureADTokenExchange

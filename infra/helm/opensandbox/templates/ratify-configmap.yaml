@@ -1,0 +1,88 @@
+{{/*
+  ratify-configmap.yaml — Ratify TrustPolicy configuration for OpenSandbox.
+  Plan ref: RALPLAN-DR v0.3 FINAL, Task 1.3, Pre-mortem #2 (Notation cert rotation)
+
+  Ratify is configured with TWO trusted certificates (primary + secondary) to
+  support zero-downtime cert rotation per the IaC-enforced dual-cert policy.
+
+  Rotation protocol (operator responsibility — see runbooks/cert-rotation.md):
+  1. Both certs MUST be valid at all times (14-day overlap minimum).
+  2. Promote secondary to primary, mint a new secondary.
+  3. Deploy updated Helm release with new secret names.
+  4. Run canary CI: sign test images with BOTH old and new certs; assert both schedule.
+  5. After 7 consecutive canary-passing days, retire the old cert.
+
+  The Kubernetes Secrets referenced here are populated by csi-secrets-store
+  + Azure Key Vault provider (NOT stored in this chart or in Git).
+
+  See also: Ratify upstream chart values in ratify.ratify sub-key.
+*/}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "opensandbox.fullname" . }}-ratify-trust-policy
+  namespace: {{ include "opensandbox.systemNamespace" . }}
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ratify
+  annotations:
+    opensandbox.io/rotation-note: >
+      This ConfigMap references TWO cert secrets (primary + secondary).
+      The 14-day overlap between old and new certs is the operator's
+      responsibility per the rotation runbook (runbooks/cert-rotation.md).
+      NEVER remove the secondary cert before running the canary CI test.
+data:
+  # Ratify TrustPolicy JSON — consumed by the Ratify admission controller.
+  # See: https://github.com/deislabs/ratify/blob/main/docs/trustpolicy.md
+  trustpolicy.json: |
+    {
+      "version": "1.0",
+      "trustPolicies": [
+        {
+          "name": "opensandbox-images",
+          "registryScopes": [
+            {{ if .Values.ratify.trustPolicy.registryScope -}}
+            {{ printf "\"*%s/*\"" .Values.ratify.trustPolicy.registryScope | quote }}
+            {{- else -}}
+            "*"
+            {{- end }}
+          ],
+          "signatureVerification": {
+            "level": "strict"
+          },
+          "trustStores": [
+            "ca:opensandbox-primary",
+            "ca:opensandbox-secondary"
+          ],
+          "trustedIdentities": [
+            "*"
+          ]
+        }
+      ]
+    }
+
+  # Ratify CertificateStore configuration — maps store names to K8s secrets.
+  # The secrets are populated by csi-secrets-store + Azure Key Vault provider.
+  # They are NOT created by this chart.
+  certificatestore.json: |
+    {
+      "stores": {
+        "opensandbox-primary": {
+          "certType": "CA",
+          "certProvider": "k8s",
+          "parameters": {
+            "secretName": {{ .Values.ratify.trustPolicy.primaryCertSecretName | quote }},
+            "namespace": {{ include "opensandbox.systemNamespace" . | quote }}
+          }
+        },
+        "opensandbox-secondary": {
+          "certType": "CA",
+          "certProvider": "k8s",
+          "parameters": {
+            "secretName": {{ .Values.ratify.trustPolicy.secondaryCertSecretName | quote }},
+            "namespace": {{ include "opensandbox.systemNamespace" . | quote }}
+          }
+        }
+      }
+    }

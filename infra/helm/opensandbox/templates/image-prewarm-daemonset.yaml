@@ -1,0 +1,244 @@
+{{/*
+  image-prewarm-daemonset.yaml — Image Pre-warm DaemonSet
+  Plan ref: RALPLAN-DR v0.3 FINAL, Task 2.7 (Architect improvement #2 + Critic S-C5)
+
+  Purpose: crictl pull curated images on every Kata node before sandbox pods schedule.
+
+  Node readiness gate:
+    1. Node is provisioned with taint: pre-warm=pending:NoSchedule
+    2. This DaemonSet tolerates both `runtime=kata:NoSchedule` AND
+       `pre-warm=pending:NoSchedule` so it can run on the freshly provisioned node.
+    3. initContainer pulls all images listed in .Values.imagePreWarm.images
+       using crictl, serializing to respect the parallelPullsPerNode limit.
+    4. After all pulls succeed, the initContainer removes the `pre-warm=pending`
+       taint from the node via kubectl patch.
+    5. Sandbox pods only tolerate `runtime=kata` (NOT `pre-warm=pending`), so
+       they CANNOT schedule until the taint is removed — enforcing the readiness gate.
+
+  Bandwidth throttle (ACR PE saturation mitigation):
+    - parallelPullsPerNode (default: 2) controls intra-node parallelism via
+      semaphore-style serialization in the init script.
+    - Cluster-wide limit is documented in values but is a soft guidance value;
+      autoscaler node addition pace + this per-node throttle effectively limits
+      cluster-wide concurrency to parallelPullsPerNode × active-scale-events.
+*/}}
+{{- if .Values.imagePreWarm.enabled }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "opensandbox.fullname" . }}-prewarm
+  namespace: {{ include "opensandbox.systemNamespace" . }}
+  labels:
+    {{- include "opensandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: image-prewarm
+  annotations:
+    # Bandwidth throttle config — for documentation and audit purposes.
+    opensandbox.io/parallel-pulls-per-node: {{ .Values.imagePreWarm.parallelPullsPerNode | quote }}
+    opensandbox.io/parallel-pulls-cluster-wide: {{ .Values.imagePreWarm.parallelPullsClusterWide | quote }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "opensandbox.prewarm.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        {{- include "opensandbox.prewarm.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "opensandbox.prewarm.serviceAccountName" . }}
+
+      # Must schedule on Kata nodes only.
+      nodeSelector:
+        kubernetes.azure.com/agentpool: kata
+
+      tolerations:
+        # Tolerate the runtime taint (required to schedule on Kata nodes).
+        - key: "runtime"
+          operator: "Equal"
+          value: "kata"
+          effect: "NoSchedule"
+        # Tolerate the pre-warm-pending taint — this is the whole point: we
+        # run on nodes that are NOT yet ready for sandbox workloads.
+        - key: "pre-warm"
+          operator: "Equal"
+          value: "pending"
+          effect: "NoSchedule"
+
+      # hostNetwork + hostPID: false — no host namespace access needed.
+      hostNetwork: false
+      hostPID: false
+
+      initContainers:
+        - name: image-puller
+          image: {{ printf "%s:%s" .Values.imagePreWarm.image.repository .Values.imagePreWarm.image.tag | quote }}
+          imagePullPolicy: {{ .Values.imagePreWarm.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: false  # crictl typically needs root or specific caps
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              # NOTE (Phase 0 task 0.1): If crictl requires NET_ADMIN or
+              # SYS_PTRACE, add them here and document in upstream-delta.md.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -euo pipefail
+
+              PARALLEL_PULLS={{ .Values.imagePreWarm.parallelPullsPerNode }}
+              NODE_NAME="${NODE_NAME:-unknown}"
+              MARKER_DIR=/tmp/prewarm-markers
+              mkdir -p "${MARKER_DIR}"
+
+              echo "[prewarm] Node: ${NODE_NAME}, parallel pulls per node: ${PARALLEL_PULLS}"
+
+              # ----------------------------------------------------------------
+              # Pull images — serialize within the node up to PARALLEL_PULLS.
+              # We use a simple slot-file semaphore since we have no job controller.
+              # For PARALLEL_PULLS=1 this becomes fully serial.
+              # ----------------------------------------------------------------
+              pull_image() {
+                local img="$1"
+                local safe_name
+                safe_name=$(echo "${img}" | tr '/:' '_')
+                local marker="${MARKER_DIR}/${safe_name}.done"
+
+                if [ -f "${marker}" ]; then
+                  echo "[prewarm] Already pulled: ${img}"
+                  return 0
+                fi
+
+                echo "[prewarm] Pulling: ${img}"
+                # crictl is expected at /usr/local/bin/crictl on AKS nodes.
+                # It is accessed via the crictl binary in the utility image or
+                # via the hostPath mount of the CRI socket if required.
+                # NOTE (Phase 0 task 0.1): Validate crictl availability in the
+                # chosen utility image. If not available, switch to a custom
+                # image with crictl pre-installed.
+                crictl pull "${img}" || {
+                  echo "[prewarm] ERROR: failed to pull ${img}"
+                  exit 1
+                }
+                touch "${marker}"
+                echo "[prewarm] Done: ${img}"
+              }
+
+              IMAGES=(
+              {{- range .Values.imagePreWarm.images }}
+                {{ . | quote }}
+              {{- end }}
+              )
+
+              if [ ${#IMAGES[@]} -eq 0 ]; then
+                echo "[prewarm] WARNING: imagePreWarm.images is empty. No images to pull."
+                echo "[prewarm] Set imagePreWarm.images in values.yaml before deploying to production."
+              fi
+
+              # Pull in batches of PARALLEL_PULLS using background jobs + wait.
+              batch=()
+              for img in "${IMAGES[@]}"; do
+                batch+=("${img}")
+                if [ ${#batch[@]} -ge "${PARALLEL_PULLS}" ]; then
+                  for b in "${batch[@]}"; do
+                    pull_image "${b}" &
+                  done
+                  wait  # Wait for batch to complete before starting next batch.
+                  batch=()
+                fi
+              done
+              # Drain final partial batch.
+              for b in "${batch[@]}"; do
+                pull_image "${b}" &
+              done
+              wait
+
+              echo "[prewarm] All images pulled successfully on node ${NODE_NAME}."
+
+              # ----------------------------------------------------------------
+              # Remove the pre-warm=pending taint from this node.
+              # This signals the scheduler that the node is ready for sandbox pods.
+              # The ServiceAccount opensandbox-prewarm has ClusterRole
+              # opensandbox-prewarm-taint-remover (see image-prewarm-controller-rbac.yaml)
+              # that grants `patch nodes` permission.
+              # ----------------------------------------------------------------
+              echo "[prewarm] Removing pre-warm=pending taint from node ${NODE_NAME}..."
+
+              # Fetch current taints and rebuild without the pre-warm=pending taint.
+              # We use kubectl patch with a JSON merge patch that sets taints to the
+              # existing list minus the pre-warm taint. This is idempotent.
+              TAINTS_JSON=$(kubectl get node "${NODE_NAME}" -o jsonpath='{.spec.taints}')
+              NEW_TAINTS=$(echo "${TAINTS_JSON}" | \
+                python3 -c "
+              import sys, json
+              taints = json.load(sys.stdin) or []
+              filtered = [t for t in taints if not (t.get('key') == 'pre-warm' and t.get('value') == 'pending')]
+              print(json.dumps(filtered))
+              ")
+
+              PATCH_BODY="{\"spec\":{\"taints\":${NEW_TAINTS} } }"
+              kubectl patch node "${NODE_NAME}" \
+                --type=merge \
+                -p "${PATCH_BODY}"
+
+              echo "[prewarm] Taint removed. Node ${NODE_NAME} is ready for sandbox pods."
+
+              # Write the liveness marker file.
+              touch /tmp/prewarm-complete
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: prewarm-markers
+              mountPath: /tmp/prewarm-markers
+
+      containers:
+        # Main container — stays alive to support liveness probe.
+        # A DaemonSet requires at least one non-init container.
+        # This container simply sleeps; its purpose is the liveness probe signal.
+        - name: prewarm-sentinel
+          image: {{ printf "%s:%s" .Values.imagePreWarm.image.repository .Values.imagePreWarm.image.tag | quote }}
+          imagePullPolicy: {{ .Values.imagePreWarm.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # Block until the liveness marker exists (set by initContainer).
+              while [ ! -f /tmp/prewarm-complete ]; do
+                sleep 5
+              done
+              echo "[prewarm-sentinel] Pre-warm complete. Staying alive."
+              # Sleep forever — node scheduler/autoscaler manages lifecycle.
+              exec sleep infinity
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # Needs /tmp write for marker
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.imagePreWarm.resources | nindent 12 }}
+          livenessProbe:
+            exec:
+              command:
+                - test
+                - -f
+                - /tmp/prewarm-complete
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            failureThreshold: 3
+          volumeMounts:
+            - name: prewarm-markers
+              mountPath: /tmp
+
+      volumes:
+        - name: prewarm-markers
+          emptyDir: {}
+
+{{- end }}
