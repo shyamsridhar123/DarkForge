@@ -368,4 +368,5 @@ jobs:
           kubectl delete pod notation-canary-secondary -n notation-canary-test
 
       - name: Rotation canary PASSED
-        run: echo "Notation rotation canary: PASS — both primary and secondary certs trusted."
+        run: |
+          echo 'Notation rotation canary: PASS - both primary and secondary certs trusted.'

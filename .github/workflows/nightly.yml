@@ -148,7 +148,7 @@ jobs:
 
       - name: No upstream changes
         if: steps.diff-check.outputs.upstream_new_commits == '0'
-        run: echo "Upstream sync: no new commits. Repository is up to date."
+        run: echo 'Upstream sync - no new commits. Repository is up to date.'
 
   # ---------------------------------------------------------------------------
   # Container escape tests (nightly on prod cluster)
@@ -304,7 +304,7 @@ jobs:
             2>/dev/null || echo "::warning::LAW export not available via CLI — use Diagnostic Settings archive path"
           echo "LAW archive step complete (verify in Diagnostic Settings → Storage account)."
 
-      - name: DR Step 4 — Simulate disaster: delete primary KV (dry-run)
+      - name: "DR Step 4 - Simulate disaster: delete primary KV (dry-run)"
         run: |
           echo "DR DRILL: Disaster simulation is DRY-RUN only — primary KV will NOT actually be deleted."
           echo "In a real DR event, follow runbooks/dr-drill.md Step 4 for the actual delete + restore procedure."

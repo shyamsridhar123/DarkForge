@@ -85,8 +85,13 @@ def app(mock_jwks):
     jv._jwks_cache = mock_jwks
     jv._jwks_fetched_at = time.monotonic()
 
-    # Mock OBO exchange — return a dummy AKS token
-    obo._msal_app = MagicMock()
+    # Mock OBO exchange ��� return a dummy AKS token
+    msal_mock = MagicMock()
+    msal_mock.acquire_token_on_behalf_of.return_value = {
+        "access_token": "aks-token-stub",
+        "expires_in": 3600,
+    }
+    obo._msal_app = msal_mock
     obo._token_cache.clear()
 
     # Clear session store between tests
@@ -117,6 +122,10 @@ def mock_aks(monkeypatch):
     monkeypatch.setattr(aks, "exec_in_sandbox", exec_mock)
     monkeypatch.setattr(aks, "delete_sandbox_pod", delete_mock)
     monkeypatch.setattr(aks, "get_sandbox_pod", get_mock)
+    monkeypatch.setattr("app.routers.sessions.create_sandbox_pod", create_mock)
+    monkeypatch.setattr("app.routers.sessions.exec_in_sandbox", exec_mock)
+    monkeypatch.setattr("app.routers.sessions.delete_sandbox_pod", delete_mock)
+    monkeypatch.setattr("app.routers.sessions.get_sandbox_pod", get_mock)
     monkeypatch.setattr("app.auth.obo_exchange.exchange_for_aks", obo_mock)
 
     return {"create": create_mock, "exec": exec_mock, "delete": delete_mock}
