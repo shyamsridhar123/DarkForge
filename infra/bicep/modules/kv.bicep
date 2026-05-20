@@ -46,104 +46,21 @@ resource kv 'Microsoft.KeyVault/vaults@2023-07-01' = {
 }
 
 // ---------------------------------------------------------------------------
-// Notation signing certificates
+// Notation signing certificates — created as a POST-DEPLOY step, not in Bicep.
 //
-// NOTE on cert validity overlap: The Bicep here provisions both certs with a
-// self-signed issuer and a 365-day validity. The OPERATOR must ensure:
-//   1. notation-secondary is minted when notation-primary has ≤ 21 days remaining.
-//   2. notation-primary is retired (removed from Ratify TrustPolicy) only when
-//      notation-secondary is fully propagated AND at ≤ 7 days remaining.
-//   3. Minimum 14-day overlap between primary and secondary validity windows.
-// This 14-day overlap cannot be mechanically enforced by Bicep alone because
-// KV certificate expiry is calendar-time dependent; it IS enforced by the
-// rotation runbook at runbooks/cert-rotation.md and verified by the canary CI
-// test (see plan pre-mortem #2, Task 1.3 addition).
-// ---------------------------------------------------------------------------
-
-#disable-next-line BCP081
-resource notationCertPrimary 'Microsoft.KeyVault/vaults/certificates@2023-07-01' = {
-  parent: kv
-  name: 'notation-primary'
-  properties: {
-    certificatePolicy: {
-      keyProperties: {
-        exportable: false
-        keyType: 'EC'
-        curve: 'P-256'
-        reuseKey: false
-      }
-      secretProperties: {
-        contentType: 'application/x-pem-file'
-      }
-      x509CertificateProperties: {
-        subject: 'CN=notation-primary-opensandbox-${env}'
-        validityInMonths: 12
-        keyUsage: ['digitalSignature']
-        ekus: ['1.3.6.1.5.5.7.3.3']  // codeSigning EKU
-      }
-      issuerParameters: {
-        name: 'Self'  // Self-signed; operator replaces with trusted CA issuer in production
-        certificateType: 'Unknown'
-      }
-      attributes: {
-        enabled: true
-      }
-      lifetimeActions: [
-        {
-          trigger: {
-            daysBeforeExpiry: 21
-          }
-          action: {
-            actionType: 'EmailContacts'  // Alert operator; DO NOT auto-renew to avoid silent rotation
-          }
-        }
-      ]
-    }
-  }
-}
-
-#disable-next-line BCP081
-resource notationCertSecondary 'Microsoft.KeyVault/vaults/certificates@2023-07-01' = {
-  parent: kv
-  name: 'notation-secondary'
-  properties: {
-    certificatePolicy: {
-      keyProperties: {
-        exportable: false
-        keyType: 'EC'
-        curve: 'P-256'
-        reuseKey: false
-      }
-      secretProperties: {
-        contentType: 'application/x-pem-file'
-      }
-      x509CertificateProperties: {
-        subject: 'CN=notation-secondary-opensandbox-${env}'
-        validityInMonths: 12
-        keyUsage: ['digitalSignature']
-        ekus: ['1.3.6.1.5.5.7.3.3']
-      }
-      issuerParameters: {
-        name: 'Self'
-        certificateType: 'Unknown'
-      }
-      attributes: {
-        enabled: true
-      }
-      lifetimeActions: [
-        {
-          trigger: {
-            daysBeforeExpiry: 21
-          }
-          action: {
-            actionType: 'EmailContacts'
-          }
-        }
-      ]
-    }
-  }
-}
-
+// Why not Bicep:
+//   Microsoft.KeyVault/vaults/certificates ARM creation of a NEW self-signed cert
+//   returns BadRequest with an empty message — the resource provider expects the
+//   cert to already exist (it can be referenced/read, not created). The supported
+//   way to create a cert is via the data-plane API:
+//       az keyvault certificate create --vault-name <kv> -n notation-primary    --policy "$(az keyvault certificate get-default-policy)"
+//       az keyvault certificate create --vault-name <kv> -n notation-secondary  --policy "$(az keyvault certificate get-default-policy)"
+//   See scripts/post-deploy/create-notation-certs.sh for the canonical command.
+//
+// Plan reference: Phase 1 Task 1.3 (B-C4 fix) still in force — IaC-enforced dual-cert
+//   Notation rotation. The IaC enforcement now lives in the post-deploy script and
+//   the deployment-script wrapper in main.bicep (deployScripts) which asserts both
+//   certs exist before marking the deployment complete.
 // ---------------------------------------------------------------------------
 // Private DNS Zone for Key Vault
 // ---------------------------------------------------------------------------
@@ -225,5 +142,6 @@ resource kvDiag 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
 output kvId string = kv.id
 output kvName string = kv.name
 output kvUri string = kv.properties.vaultUri
-output notationPrimaryCertName string = notationCertPrimary.name
-output notationSecondaryCertName string = notationCertSecondary.name
+// notation cert names are constants assumed by the post-deploy script
+output notationPrimaryCertName string = 'notation-primary'
+output notationSecondaryCertName string = 'notation-secondary'

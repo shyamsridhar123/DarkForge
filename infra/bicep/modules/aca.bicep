@@ -317,7 +317,11 @@ resource portalFrontendAuth 'Microsoft.App/containerApps/authConfigs@2024-03-01'
         logoutEndpoint: '/auth/logout'
       }
       tokenStore: {
-        enabled: true
+        // Disabled in v1 — enabling requires SasUrlSettingName for a blob-storage
+        // backend, which we don't need for a read-only portal. Sessions live in
+        // the encrypted Entra cookie set by Easy Auth. If we add long-lived OBO
+        // caches later, provision an Azure Storage account and re-enable.
+        enabled: false
       }
     }
   }

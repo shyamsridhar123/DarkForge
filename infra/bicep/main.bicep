@@ -59,7 +59,7 @@ resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
 // ---------------------------------------------------------------------------
 
 module observability 'modules/observability.bicep' = {
-  name: 'observability'
+  name: 'opensandbox-observability'
   scope: rg
   params: {
     env: env
@@ -73,7 +73,7 @@ module observability 'modules/observability.bicep' = {
 // ---------------------------------------------------------------------------
 
 module network 'modules/network.bicep' = {
-  name: 'network'
+  name: 'opensandbox-network'
   scope: rg
   params: {
     env: env
@@ -86,7 +86,7 @@ module network 'modules/network.bicep' = {
 // ---------------------------------------------------------------------------
 
 module firewall 'modules/firewall.bicep' = {
-  name: 'firewall'
+  name: 'opensandbox-firewall'
   scope: rg
   params: {
     env: env
@@ -104,7 +104,7 @@ module firewall 'modules/firewall.bicep' = {
 // ---------------------------------------------------------------------------
 
 module acr 'modules/acr.bicep' = if (!acrExisting) {
-  name: 'acr'
+  name: 'opensandbox-acr'
   scope: rg
   params: {
     env: env
@@ -126,7 +126,7 @@ resource existingAcr 'Microsoft.ContainerRegistry/registries@2023-07-01' existin
 // ---------------------------------------------------------------------------
 
 module kv 'modules/kv.bicep' = {
-  name: 'kv'
+  name: 'opensandbox-kv'
   scope: rg
   params: {
     env: env
@@ -142,7 +142,7 @@ module kv 'modules/kv.bicep' = {
 // ---------------------------------------------------------------------------
 
 module entra 'modules/entra.bicep' = {
-  name: 'entra'
+  name: 'opensandbox-entra'
   params: {
     apiAppId: apiAppId
     portalAppId: portalAppId
@@ -154,7 +154,7 @@ module entra 'modules/entra.bicep' = {
 // ---------------------------------------------------------------------------
 
 module aks 'modules/aks.bicep' = {
-  name: 'aks'
+  name: 'opensandbox-aks'
   scope: rg
   params: {
     env: env
@@ -174,7 +174,7 @@ module aks 'modules/aks.bicep' = {
 // ---------------------------------------------------------------------------
 
 module appgw 'modules/appgw.bicep' = {
-  name: 'appgw'
+  name: 'opensandbox-appgw'
   scope: rg
   params: {
     env: env
@@ -190,7 +190,7 @@ module appgw 'modules/appgw.bicep' = {
 // ---------------------------------------------------------------------------
 
 module aca 'modules/aca.bicep' = {
-  name: 'aca'
+  name: 'opensandbox-aca'
   scope: rg
   params: {
     env: env
