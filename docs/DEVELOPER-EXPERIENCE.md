@@ -1,7 +1,8 @@
 # Developer Experience
 
 This document is the on-ramp for a developer at our company who wants to use the DarkForge
-sandbox runtime to execute untrusted or AI-generated code. It is the
+sandbox runtime to run disposable code — code from an LLM agent, a one-shot experiment, a
+parallel evaluation, or anything else they want to throw away cleanly. It is the
 operating manual for the SDK and the surrounding workflow. For the underlying
 platform shape (CRDs, controller, firewall, ACA wiring) see
 [`docs/ARCHITECTURE.md`](ARCHITECTURE.md). For day-2 operations see

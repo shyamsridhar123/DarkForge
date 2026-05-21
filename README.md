@@ -3,11 +3,12 @@
 **The execution substrate for distributed AI engineering on Azure. One engineer, a fleet of
 safely-parallel sandboxes, 100× the work.**
 
-A working Azure deployment of a Kubernetes-native, Kata-isolated sandbox runtime for executing
-untrusted or AI-generated code. The stack is wired end-to-end: any LLM agent or developer SDK
-can call `Sandbox.create`, get back a running Kata-isolated pod, execute code, and read
-results. Kimi K2.5 in Microsoft Foundry is one worked example; the path generalises to GPT,
-Claude, or any other model the platform team chooses to wire in.
+A working Azure deployment of a Kubernetes-native, Kata-isolated sandbox runtime where
+engineers and their agents run code they want to be able to throw away. The stack is wired
+end-to-end: any LLM agent or developer SDK can call `Sandbox.create`, get back a running
+Kata-isolated pod, execute code, and read results. Kimi K2.5 in Microsoft Foundry is one
+worked example; the path generalises to GPT, Claude, or any other model the platform team
+chooses to wire in.
 
 Everything in this repo describes the Azure landing zone — the AKS cluster, Kata node pool,
 ACR Premium with private endpoint, Azure Firewall egress, Event Hubs/Stream Analytics audit
@@ -28,11 +29,12 @@ The project's premise is one sentence:
 To make that real inside an enterprise, four properties have to hold simultaneously, and
 they're hard to get *together* — which is the gap this repo fills:
 
-1. **Hard isolation, not soft.** Untrusted or AI-generated code runs against your network,
-   your secrets, and your data plane. Shared-kernel containers are a single Linux LPE away
-   from your AKS node. The trust boundary here is **Kata Containers** — per-pod VM-grade
-   isolation with its own guest kernel — not a Linux namespace. A container escape earns
-   the attacker an empty disposable VM.
+1. **Hard isolation, because blast radius is the bottleneck.** Engineers run code they want
+   to throw away — LLM-generated, half-baked, disposable, dozens of variants at once. On a
+   shared-kernel container, one bad `pip install` or `rm -rf` poisons the AKS node and
+   everyone else's work on it. The trust boundary here is **Kata Containers** — per-pod
+   VM-grade isolation with its own guest kernel, not a Linux namespace. A misbehaving agent
+   (or, in the rare case, a hostile one) earns an empty disposable VM and nothing else.
 
 2. **Per-user identity, end to end.** Every sandbox action traces to a real Entra ID
    identity via OBO → Workload Identity → projected SA token. No shared service-principal

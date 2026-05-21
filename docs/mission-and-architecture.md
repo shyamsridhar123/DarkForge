@@ -54,7 +54,7 @@ Windows sandboxes · GUI/RDP/desktop · multi-cloud / hybrid · multi-region (ar
 
 ### 2.2 The three decision drivers (RALPLAN §Decision Drivers)
 
-1. **Hard isolation for untrusted code is non-negotiable** → Kata mandatory; container-escape test in CI; signed images; private cluster.
+1. **Hard isolation is non-negotiable** → Kata mandatory (so an agent's bad `rm -rf` or a runaway `pip install` doesn't escape the VM); container-escape test in CI; signed images; private cluster.
 2. **Audit trail must be unbroken and timely** → Entra OBO end-to-end; Diagnostic Settings (not Container Insights) for fast-path audit; warm pools cannot break user attribution.
 3. **Build velocity matters: 4-6 weeks for v1** → Single region, single AKS cluster, Bicep, curated images.
 
