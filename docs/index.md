@@ -1,6 +1,6 @@
 # Documentation Index
 
-Top-level entry point for the OpenBox-on-Azure documentation.
+Top-level entry point for the DarkForge documentation.
 
 ## Start here
 

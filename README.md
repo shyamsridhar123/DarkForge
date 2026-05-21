@@ -1,4 +1,7 @@
-# OpenBox on Azure
+# DarkForge
+
+**The execution substrate for distributed AI engineering on Azure. One engineer, a fleet of
+safely-parallel sandboxes, 100× the work.**
 
 A working Azure deployment of a Kubernetes-native, Kata-isolated sandbox runtime for executing
 untrusted or AI-generated code. The stack is wired end-to-end: any LLM agent or developer SDK
@@ -209,7 +212,7 @@ There are exactly two delta points against `third_party/opensandbox/`:
 
 ## Acknowledgement and licenses
 
-This wrapper — the Azure landing zone, IaC, docs, and SDK wrappers under this repo — is
+DarkForge — the Azure landing zone, IaC, docs, and SDK wrappers under this repo — is
 licensed under the MIT [`LICENSE`](LICENSE).
 
 The sandbox runtime under [`third_party/opensandbox/`](third_party/opensandbox/) is the

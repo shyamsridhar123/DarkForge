@@ -1,4 +1,4 @@
-# OpenBox-on-Azure .gitignore
+# DarkForge .gitignore
 
 # OMC orchestration state — local-only, contains internal task state
 .omc/state/

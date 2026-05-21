@@ -1,6 +1,6 @@
 # Roadmap
 
-Snapshot of what is complete, what is deferred, and what is queued next for OpenBox on Azure.
+Snapshot of what is complete, what is deferred, and what is queued next for DarkForge.
 Updated 2026-05-20.
 
 ## Done

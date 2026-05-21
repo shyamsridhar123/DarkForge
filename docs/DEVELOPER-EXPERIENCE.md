@@ -1,6 +1,6 @@
 # Developer Experience
 
-This document is the on-ramp for a developer at our company who wants to use the OpenBox
+This document is the on-ramp for a developer at our company who wants to use the DarkForge
 sandbox runtime to execute untrusted or AI-generated code. It is the
 operating manual for the SDK and the surrounding workflow. For the underlying
 platform shape (CRDs, controller, firewall, ACA wiring) see
@@ -11,7 +11,7 @@ platform shape (CRDs, controller, firewall, ACA wiring) see
 
 ## 1. The 30-second mental model
 
-OpenBox is a Kubernetes-native, Kata-isolated code execution runtime on Azure. You
+DarkForge is a Kubernetes-native, Kata-isolated code execution runtime on Azure. You
 call `Sandbox.create()` in Python, get a fresh VM-isolated pod with its own
 kernel, run shell commands against it, read the output, and let the SDK tear it
 down. The lifecycle (when to create, when to kill, what to run) is your

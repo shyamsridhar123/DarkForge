@@ -1,6 +1,6 @@
 # Operations
 
-Day-2 runbook for OpenBox on Azure. Cluster health checklist, sandbox image
+Day-2 runbook for DarkForge. Cluster health checklist, sandbox image
 onboarding, API-key rotation, and execd rebuild walkthrough live here.
 Generic incident-response, onboarding, CVE-response, and DR-drill runbooks
 live under [`runbooks/`](../runbooks/).

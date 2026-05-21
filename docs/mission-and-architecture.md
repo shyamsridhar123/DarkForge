@@ -1,4 +1,4 @@
-# OpenBox-on-Azure — Mission, Rationale & Architecture
+# DarkForge — Mission, Rationale & Architecture
 
 > **Source of truth:**
 > - Spec: [`.omc/specs/deep-dive-implement-opensandbox-in-azure.md`](../.omc/specs/deep-dive-implement-opensandbox-in-azure.md) (ambiguity 14%, 34 ACs)

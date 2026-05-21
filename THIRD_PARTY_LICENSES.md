@@ -1,6 +1,6 @@
 # Third-Party Licenses and Attributions
 
-This repository (OpenBox on Azure) is licensed under the MIT License
+This repository (DarkForge) is licensed under the MIT License
 (see [`LICENSE`](LICENSE)). It vendors and depends on third-party
 software that is governed by its own license terms, listed below.
 

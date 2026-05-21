@@ -7,7 +7,7 @@ labelled "current state, may drift" depend on live cluster output rather than co
 
 ## TL;DR
 
-OpenBox on Azure is a sandbox runtime running on AKS, with Kata Containers providing per-pod
+DarkForge is a sandbox runtime running on AKS, with Kata Containers providing per-pod
 VM-grade isolation. Everything else — registry, firewall, audit pipeline, identity, Foundry
 integration — is the Azure landing zone wrapped around it. The trust boundary is **Kata**, not
 the Linux namespace. The runtime itself is vendored under
