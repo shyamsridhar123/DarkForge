@@ -1,8 +1,9 @@
 # DarkForge .gitignore
 
-# OMC orchestration state — local-only, contains internal task state
-.omc/state/
-.omc/drafts/
+# OMC orchestration state — local-only, contains internal task state and
+# research/evidence artifacts that aren't meant for the public repo.
+.omc/
+**/.omc/
 .remember/
 # Track settings and hooks; ignore only session-local Claude data
 .claude/transcripts/
@@ -26,6 +27,7 @@ htmlcov/
 build/
 dist/
 .venv/
+**/.venv/
 venv/
 env/
 .python-version
@@ -38,6 +40,10 @@ node_modules/
 *.tsbuildinfo
 .npm/
 dist/
+# The portal-frontend ships pure DOM HTML/CSS in dist/ as its source of truth
+# (no bundler step). Un-ignore that specific path.
+!apps/portal-frontend/dist/
+!apps/portal-frontend/dist/**
 
 # Go
 *.exe
@@ -74,6 +80,9 @@ desktop.ini
 # OpenSandbox server API key — plaintext local-only secret pulled from cluster.
 # Materialized by: kubectl -n opensandbox-system get secret opensandbox-api-key ...
 examples/.opensandbox-api-key
+
+# Kata webhook TLS material — regenerate per-cluster via generate-certs.sh
+infra/kata-webhook/certs/
 azureauth.json
 credentials.json
 local.settings.json
