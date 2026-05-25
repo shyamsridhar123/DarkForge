@@ -6,169 +6,323 @@
   <title>DarkForge Command Center</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
-  <header>
-    <div class="header-left">
-      <span class="logo">&#9874;</span>
-      <h1>DarkForge <span class="dim">Command Center</span></h1>
-    </div>
-    <div class="summary-chips" id="summary-chips">
-      <span class="chip">Loading&hellip;</span>
+<body x-data="root()">
+
+  <!-- ── Topbar ── -->
+  <header class="topbar">
+    <div class="brand">&#9875; DarkForge <span class="dim">Command Center</span></div>
+    <div class="identity-chips">
+      <span class="chip identity">&#9888; DEV MODE</span>
+      <span class="chip mono" x-text="identity.az_user || '—'">…</span>
+      <span class="chip mono" x-text="identity.kubectx || '—'">…</span>
     </div>
   </header>
 
-  <main>
-    <div class="section-header">
-      <h2>Sandboxes</h2>
-      <span class="refresh-label" id="refresh-label">Refreshing every 5s</span>
-    </div>
+  <!-- ── Main grid ── -->
+  <main class="grid">
 
-    <div id="error-banner"></div>
+    <!-- Card 1: Cluster Lifecycle (cols 1-6) -->
+    <article class="card card-cluster" x-data="clusterPanel()">
+      <header>
+        <h2>&#127968; Cluster Lifecycle</h2>
+        <span class="subtitle" x-text="state.name || 'aks-opensandbox-dev'">aks-opensandbox-dev</span>
+      </header>
+      <div class="card-body cluster-body">
+        <div class="power-area">
+          <button
+            class="power-btn"
+            :class="{
+              'power-on': isRunning(),
+              'power-off': isStopped(),
+              'power-transitioning': isTransitioning()
+            }"
+            :disabled="busy || isTransitioning()"
+            x-on:click="toggle()"
+            :title="powerLabel()"
+          >
+            <span x-show="!busy && !isTransitioning()">&#9711;</span>
+            <span class="spinner" x-show="busy || isTransitioning()"></span>
+          </button>
+          <div class="power-label" x-text="powerLabel()">—</div>
+          <div class="power-elapsed dim small" x-show="busy" x-text="elapsed ? elapsed + 's elapsed' : ''"></div>
+        </div>
+        <div class="cluster-meta">
+          <div class="meta-row">
+            <span class="dim small">Power</span>
+            <span class="status" :class="'status-' + (state.power || 'unknown').toLowerCase()" x-text="state.power || '—'">—</span>
+          </div>
+          <div class="meta-row">
+            <span class="dim small">Provision</span>
+            <span class="status" :class="'status-' + (state.state || 'unknown').toLowerCase()" x-text="state.state || '—'">—</span>
+          </div>
+          <div class="meta-row">
+            <span class="dim small">Last action</span>
+            <span class="mono small" x-text="state.last_action || '—'">—</span>
+          </div>
+        </div>
+      </div>
+    </article>
 
-    <table>
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Status</th>
-          <th>Pod</th>
-          <th>Node</th>
-          <th>Runtime</th>
-          <th>Pool</th>
-          <th>Age</th>
-        </tr>
-      </thead>
-      <tbody id="sandbox-rows">
-        <tr><td colspan="7" class="loading">Loading sandboxes&hellip;</td></tr>
-      </tbody>
-    </table>
+    <!-- Card 2: Run Swarm (cols 7-12) -->
+    <article class="card card-swarm" x-data="swarmPanel()">
+      <header>
+        <h2>&#9889; Run Swarm</h2>
+        <span class="subtitle" x-text="running ? 'phase: ' + phase : (summary ? 'last: ' + (summary.passes || 0) + '/' + (summary.total || 0) + ' pass' : 'idle')">idle</span>
+      </header>
+      <div class="card-body">
+        <!-- form -->
+        <div class="swarm-form" x-show="!running">
+          <div class="form-row">
+            <label class="form-label">N</label>
+            <input class="form-input" type="number" min="1" max="100" x-model.number="n" style="width:70px">
+            <label class="form-label">Model</label>
+            <select class="form-select" x-model="model">
+              <option value="Kimi-K2.6">Kimi-K2.6</option>
+              <option value="Kimi-K2.5">Kimi-K2.5</option>
+            </select>
+            <label class="form-label">Image</label>
+            <input class="form-input" type="text" placeholder="(default)" x-model="image" style="flex:1">
+          </div>
+          <button class="btn primary" x-on:click="run()">&#9654; Run</button>
+          <span class="dim small" x-show="summary && !running" x-text="summary ? 'Speedup: ' + (summary.speedup || '—') + 'x  Wall: ' + (summary.wall_s || '—') + 's' : ''"></span>
+        </div>
+
+        <!-- running state -->
+        <div class="swarm-running" x-show="running">
+          <div class="swarm-status-row">
+            <span class="chip accent" x-text="phase">—</span>
+            <span class="mono small dim" x-text="elapsed + 's'">0s</span>
+            <button class="btn danger small" x-on:click="cancel()">&#9632; Cancel</button>
+          </div>
+        </div>
+
+        <!-- leaderboard (always visible if results exist) -->
+        <div class="leaderboard-wrap" x-show="results.length > 0">
+          <table class="leaderboard">
+            <thead>
+              <tr><th>#</th><th>Status</th><th>Duration</th><th>Diagnosis</th></tr>
+            </thead>
+            <tbody>
+              <template x-for="r in leaderboard()" :key="r.idx">
+                <tr :class="winner() && r.idx === winner().idx ? 'winner-row' : ''">
+                  <td class="mono small" x-text="r.idx">—</td>
+                  <td><span class="status" :class="r.status === 'PASS' ? 'status-running' : 'status-failed'" x-text="r.status">—</span></td>
+                  <td class="mono small" x-text="r.duration_s ? r.duration_s.toFixed(1) + 's' : '—'">—</td>
+                  <td class="small dim" x-text="truncate(r.diagnosis || '', 50)">—</td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- SSE log pane -->
+        <div class="log-pane-wrap" x-show="log.length > 0">
+          <pre class="log-pane" id="swarm-log-pane"><template x-for="line in log" :key="line"><span x-text="line + '\n'"></span></template></pre>
+        </div>
+      </div>
+    </article>
+
+    <!-- Card 3: Create Sandbox (cols 1-4) -->
+    <article class="card card-create-sandbox" x-data="sandboxPanel()">
+      <header>
+        <h2>&#43; Create Sandbox</h2>
+        <span class="subtitle">kata-vm-isolation</span>
+      </header>
+      <div class="card-body">
+        <div class="form-stack">
+          <label class="form-label">Image</label>
+          <input class="form-input" type="text" x-model="image">
+
+          <div class="form-row">
+            <div class="form-col">
+              <label class="form-label">Timeout (s)</label>
+              <input class="form-input" type="number" x-model.number="timeout" min="10" max="3600">
+            </div>
+            <div class="form-col">
+              <label class="form-label">Runtime</label>
+              <select class="form-select" x-model="runtime_class">
+                <option value="kata-vm-isolation">kata-vm-isolation</option>
+                <option value="runc">runc</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-col">
+              <label class="form-label">CPU</label>
+              <input class="form-input" type="text" x-model="cpu">
+            </div>
+            <div class="form-col">
+              <label class="form-label">Memory</label>
+              <input class="form-input" type="text" x-model="memory">
+            </div>
+          </div>
+
+          <button class="btn primary" :disabled="submitting" x-on:click="create()">
+            <span class="spinner" x-show="submitting"></span>
+            <span x-show="!submitting">Create Sandbox</span>
+          </button>
+
+          <div class="small mono dim" x-show="lastCreated" x-text="lastCreated ? 'Created: ' + (lastCreated.id || lastCreated.sandbox_id || 'ok') : ''"></div>
+        </div>
+      </div>
+    </article>
+
+    <!-- Card 4: Kimi Chat (cols 5-9) -->
+    <article class="card card-kimi-chat" x-data="chatPanel()">
+      <header>
+        <h2>&#128172; Kimi Chat</h2>
+        <span class="subtitle">
+          <select class="form-select inline-select" x-model="deployment">
+            <option value="Kimi-K2.6">Kimi-K2.6</option>
+            <option value="Kimi-K2.5">Kimi-K2.5</option>
+            <option value="auto">auto</option>
+          </select>
+        </span>
+      </header>
+      <div class="card-body chat-body">
+        <div class="chat-messages" id="chat-messages">
+          <template x-if="messages.length === 0">
+            <div class="empty">Send a message to start…</div>
+          </template>
+          <template x-for="(msg, idx) in messages" :key="idx">
+            <div :class="msg.role === 'user' ? 'bubble bubble-user' : 'bubble bubble-assistant'"
+                 :data-busy="msg.busy ? 'true' : 'false'">
+              <div class="bubble-meta dim small" x-text="msg.role === 'assistant' && msg.deployment ? msg.deployment : msg.role">—</div>
+              <div x-show="msg.busy" class="chat-spinner"></div>
+              <pre class="bubble-content" x-show="!msg.busy" x-text="msg.content">—</pre>
+              <template x-if="msg.role === 'assistant' && !msg.busy && extractCode(msg.content)">
+                <button class="btn ghost small" x-on:click="runInSandbox(extractCode(msg.content))">&#9654; Run in sandbox</button>
+              </template>
+            </div>
+          </template>
+        </div>
+        <div class="chat-input-row">
+          <textarea
+            class="chat-textarea"
+            rows="2"
+            placeholder="Ask Kimi anything…"
+            x-model="input"
+            x-on:keydown.ctrl.enter="send()"
+            x-on:keydown.meta.enter="send()"
+          ></textarea>
+          <button class="btn primary" :disabled="busy || !input.trim()" x-on:click="send()">
+            <span class="spinner" x-show="busy"></span>
+            <span x-show="!busy">Send</span>
+          </button>
+        </div>
+        <div class="dim small" style="margin-top:4px">Ctrl+Enter to send</div>
+      </div>
+    </article>
+
+    <!-- Card 5: Observability (cols 10-12) -->
+    <article class="card card-observability" x-data="observabilityPanel()">
+      <header>
+        <h2>&#128200; Observability</h2>
+        <span class="subtitle">pool · events</span>
+      </header>
+      <div class="card-body">
+        <!-- Pool gauge -->
+        <div class="gauge-wrap">
+          <div class="gauge" :style="'--pct:' + gaugePercent() + '%'">
+            <div class="gauge-inner">
+              <span class="gauge-num" x-text="pool.available ?? '—'">—</span>
+              <span class="gauge-denom dim small" x-text="'/ ' + (pool.pool_max ?? '—')">—</span>
+            </div>
+          </div>
+          <div class="gauge-legend dim small">
+            <span x-text="'TOTAL=' + (pool.total ?? '—')">—</span>
+            <span x-text="'ALLOC=' + (pool.allocated ?? '—')">—</span>
+            <span x-text="'AVAIL=' + (pool.available ?? '—')">—</span>
+            <span x-text="'BUF=' + (pool.buffer_min ?? '—')">—</span>
+          </div>
+        </div>
+
+        <!-- Events feed -->
+        <div class="events-feed">
+          <div class="dim small" style="margin-bottom:4px">Recent Events</div>
+          <template x-if="events.length === 0">
+            <div class="empty small">No recent events</div>
+          </template>
+          <template x-for="(ev, idx) in events" :key="idx">
+            <div class="event-row">
+              <span class="evt-chip" :class="eventClass(ev.reason)" x-text="ev.reason || '—'">—</span>
+              <span class="dim small mono" x-text="truncate(ev.message || '', 40)">—</span>
+            </div>
+          </template>
+        </div>
+      </div>
+    </article>
+
+    <!-- Card 6: Sandboxes Table (cols 1-12, full width) -->
+    <article class="card card-sandboxes-table" x-data="sandboxesTable()">
+      <header>
+        <h2>&#128230; Sandboxes</h2>
+        <span class="subtitle">
+          <span x-text="Array.isArray(rows) ? rows.length + ' total' : '—'">—</span>
+          <span class="dim"> · </span>
+          <span x-text="summary.sandboxes ? 'running: ' + (summary.sandboxes.running || 0) : ''">—</span>
+        </span>
+      </header>
+      <div class="card-body">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Status</th>
+              <th>Pod</th>
+              <th>Node</th>
+              <th>Runtime</th>
+              <th>Pool</th>
+              <th>Age</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-if="!Array.isArray(rows) || rows.length === 0">
+              <tr><td colspan="8" class="empty">No sandboxes.</td></tr>
+            </template>
+            <template x-for="sb in (Array.isArray(rows) ? rows : [])" :key="sb.id">
+              <tr>
+                <td class="mono small" x-text="truncate(sb.id || '', 12)">—</td>
+                <td><span class="status" :class="'status-' + (sb.status || 'unknown').toLowerCase()" x-text="sb.status || '—'">—</span></td>
+                <td class="mono small" x-text="truncate(sb.pod_name || '', 24)">—</td>
+                <td class="mono small" x-text="truncate(sb.node_name || '—', 32)">—</td>
+                <td class="mono small dim" x-text="sb.runtime_class || '—'">—</td>
+                <td><span class="badge" :class="'badge-' + (sb.node_pool || 'unknown').toLowerCase()" x-text="(sb.node_pool || 'unknown').toLowerCase()">—</span></td>
+                <td class="small dim" x-text="formatAge(sb.age_seconds)">—</td>
+                <td><button class="btn danger small" x-on:click="deleteRow(sb.id)">Del</button></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </article>
+
   </main>
 
   <footer>
-    <span id="footer-text">Last refreshed: &mdash;</span>
+    <span id="footer-time">Last refreshed: —</span>
+    &nbsp;|&nbsp;
+    <span class="chip identity" style="font-size:11px">&#9888; DEV MODE — localhost only</span>
   </footer>
 
-  <script>
-    // Pure DOM API, no innerHTML. Defends against XSS and the security hook.
-    function el(tag, opts) {
-      const e = document.createElement(tag);
-      if (opts) {
-        if (opts.text !== undefined) e.textContent = opts.text;
-        if (opts.cls) e.className = opts.cls;
-        if (opts.colspan) e.colSpan = opts.colspan;
-      }
-      return e;
-    }
+  <!-- Toast stack -->
+  <div id="toast-stack" aria-live="polite"></div>
 
-    function formatAge(s) {
-      if (s == null || s < 0) return "—";
-      if (s < 60) return s + "s";
-      if (s < 3600) return Math.floor(s / 60) + "m " + (s % 60) + "s";
-      return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
-    }
+  <!-- Confirm modal -->
+  <div class="modal-backdrop" id="modal-backdrop" style="display:none">
+    <div class="modal-dialog" id="modal-dialog">
+      <div class="modal-title" id="modal-title">Confirm</div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="modal-cancel">Cancel</button>
+        <button class="btn primary" id="modal-ok">OK</button>
+      </div>
+    </div>
+  </div>
 
-    function truncate(str, n) {
-      if (!str) return "";
-      return str.length > n ? str.substring(0, n) + "…" : str;
-    }
-
-    function clearChildren(node) {
-      while (node.firstChild) node.removeChild(node.firstChild);
-    }
-
-    async function fetchJson(url) {
-      try {
-        const r = await fetch(url, { cache: "no-store" });
-        if (!r.ok) return { error: "HTTP " + r.status };
-        return await r.json();
-      } catch (err) {
-        return { error: String(err) };
-      }
-    }
-
-    async function refresh() {
-      // ─── Summary chips ───
-      const sum = await fetchJson("/api/cluster/summary");
-      const chips = document.getElementById("summary-chips");
-      clearChildren(chips);
-
-      if (sum.error) {
-        const c = el("span", { cls: "chip error", text: "API: " + sum.error });
-        chips.appendChild(c);
-      } else {
-        const items = [
-          { cls: "chip accent", k: "Kata nodes", v: sum.nodes && sum.nodes.kata },
-          { cls: "chip", k: "System nodes", v: sum.nodes && sum.nodes.system },
-          { cls: "chip", k: "Sandboxes", v: sum.sandboxes && sum.sandboxes.total },
-          { cls: "chip running", k: "Running", v: sum.sandboxes && sum.sandboxes.running },
-          { cls: "chip pending", k: "Pending", v: sum.sandboxes && sum.sandboxes.pending },
-          { cls: "chip accent", k: "On Kata", v: sum.sandboxes && sum.sandboxes.kata_pods },
-        ];
-        for (const it of items) {
-          const chip = el("span", { cls: it.cls });
-          chip.appendChild(document.createTextNode(it.k + " "));
-          const strong = el("strong", { text: String(it.v ?? "—") });
-          chip.appendChild(strong);
-          chips.appendChild(chip);
-        }
-      }
-
-      // ─── Error banner ───
-      const banner = document.getElementById("error-banner");
-      clearChildren(banner);
-
-      // ─── Sandbox rows ───
-      const data = await fetchJson("/api/sandboxes");
-      const tbody = document.getElementById("sandbox-rows");
-      clearChildren(tbody);
-
-      let rows = data;
-      if (data && data.error) {
-        const div = el("div", { cls: "error-banner", text: "Control plane: " + data.error });
-        banner.appendChild(div);
-        rows = data.sandboxes || [];
-      }
-
-      if (!Array.isArray(rows) || rows.length === 0) {
-        const tr = el("tr");
-        const td = el("td", { cls: "empty", colspan: 7, text: "No sandboxes." });
-        tr.appendChild(td);
-        tbody.appendChild(tr);
-      } else {
-        for (const sb of rows) {
-          const tr = el("tr");
-
-          tr.appendChild(el("td", { cls: "mono small", text: truncate(sb.id || "", 12) }));
-
-          const stTd = el("td");
-          const st = el("span", {
-            cls: "status status-" + String(sb.status || "unknown").toLowerCase(),
-            text: sb.status || "—",
-          });
-          stTd.appendChild(st);
-          tr.appendChild(stTd);
-
-          tr.appendChild(el("td", { cls: "mono small", text: truncate(sb.pod_name || "", 24) }));
-          tr.appendChild(el("td", { cls: "mono small", text: truncate(sb.node_name || "—", 32) }));
-          tr.appendChild(el("td", { cls: "mono small dim", text: sb.runtime_class || "—" }));
-
-          const poolTd = el("td");
-          const pool = String(sb.node_pool || "unknown").toLowerCase();
-          const badge = el("span", { cls: "badge badge-" + pool, text: pool });
-          poolTd.appendChild(badge);
-          tr.appendChild(poolTd);
-
-          tr.appendChild(el("td", { cls: "small dim", text: formatAge(sb.age_seconds) }));
-          tbody.appendChild(tr);
-        }
-      }
-
-      // ─── Footer ───
-      const now = new Date().toISOString().substring(11, 19);
-      document.getElementById("footer-text").textContent = "Last refreshed: " + now + " UTC";
-    }
-
-    refresh();
-    setInterval(refresh, 5000);
-  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+  <script src="/static/app.js"></script>
 </body>
 </html>
