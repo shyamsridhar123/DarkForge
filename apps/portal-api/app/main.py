@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,13 +11,52 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .clients import ControlPlaneClient, K8sClient
+import json
+import uuid
+
+from fastapi import HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, field_validator
+
+from . import swarm as swarm_module
+from .clients import AzClient, ControlPlaneClient, K8sClient
 from .config import settings
+from .identity import resolve_identity
+
+# Last cluster action record (module-level, cleared on restart)
+_last_action: dict[str, Any] | None = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="DarkForge Portal API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):  # noqa: ANN001
+    identity = resolve_identity()
+    key_status = "present" if identity["key_file_exists"] else "MISSING"
+    sub = identity["az_subscription_name"] or "—"
+    sub_id = identity["az_subscription_id"] or "—"
+    logger.warning(
+        "\n============================================================\n"
+        "DarkForge Portal — DEV MODE\n"
+        "  az user:        %s\n"
+        "  subscription:   %s (%s)\n"
+        "  kubectl ctx:    %s\n"
+        "  namespace:      %s\n"
+        "  api key file:   %s\n"
+        "This portal runs as YOU. Do not expose beyond localhost.\n"
+        "============================================================",
+        identity["az_user"] or "—",
+        sub,
+        sub_id,
+        identity["kubectx"] or "—",
+        identity["cluster_namespace"],
+        key_status,
+    )
+    yield
+
+
+app = FastAPI(title="DarkForge Portal API", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -48,6 +88,42 @@ def _node_pool(node_name: str | None) -> str:
 @app.get("/api/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/identity")
+async def identity() -> dict[str, Any]:
+    return resolve_identity()
+
+
+@app.get("/api/cluster/state")
+async def cluster_state() -> dict[str, Any]:
+    az = AzClient(settings.RESOURCE_GROUP, settings.CLUSTER_NAME)
+    data = await az.get_state()
+    if _last_action:
+        data = {**data, "last_action": _last_action.get("action"), "last_action_at": _last_action.get("started_at")}
+    return data
+
+
+@app.post("/api/cluster/start", status_code=202)
+async def cluster_start() -> dict[str, Any]:
+    global _last_action
+    az = AzClient(settings.RESOURCE_GROUP, settings.CLUSTER_NAME)
+    result = await az.start()
+    if "error" in result:
+        return result
+    _last_action = result
+    return {"job_id": str(uuid.uuid4()), "state": "Starting", "started_at": result["started_at"]}
+
+
+@app.post("/api/cluster/stop", status_code=202)
+async def cluster_stop() -> dict[str, Any]:
+    global _last_action
+    az = AzClient(settings.RESOURCE_GROUP, settings.CLUSTER_NAME)
+    result = await az.stop()
+    if "error" in result:
+        return result
+    _last_action = result
+    return {"job_id": str(uuid.uuid4()), "state": "Stopping", "started_at": result["started_at"]}
 
 
 @app.get("/api/sandboxes")
@@ -144,6 +220,139 @@ async def cluster_summary() -> Any:
     }
 
 
+# ---------------------------------------------------------------------------
+# Swarm endpoints
+# ---------------------------------------------------------------------------
+
+_VALID_MODELS = {"Kimi-K2.5", "Kimi-K2.6"}
+
+
+class SwarmRunRequest(BaseModel):
+    n: int
+    model: str = "Kimi-K2.6"
+    image: str | None = None
+
+    @field_validator("n")
+    @classmethod
+    def _validate_n(cls, v: int) -> int:
+        if not (1 <= v <= 200):
+            raise ValueError("n must be between 1 and 200")
+        return v
+
+    @field_validator("model")
+    @classmethod
+    def _validate_model(cls, v: str) -> str:
+        if v not in _VALID_MODELS:
+            raise ValueError(f"model must be one of {sorted(_VALID_MODELS)}")
+        return v
+
+
+@app.post("/api/swarm/runs", status_code=202)
+async def swarm_create(req: SwarmRunRequest) -> dict[str, str]:
+    run_id = await swarm_module.start_run(req.n, req.model, req.image)
+    return {"run_id": run_id}
+
+
+@app.get("/api/swarm/runs")
+async def swarm_list() -> list[dict]:
+    return swarm_module.list_runs()
+
+
+@app.get("/api/swarm/runs/{run_id}")
+async def swarm_get(run_id: str) -> dict:
+    handle = swarm_module.get_run(run_id)
+    if handle is None:
+        raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
+    summary = handle.summary or {}
+    return {
+        "run_id": handle.run_id,
+        "state": handle.state,
+        "n": handle.n,
+        "model": handle.model,
+        "image": handle.image,
+        "started_at": handle.started_at.isoformat(),
+        "finished_at": handle.finished_at.isoformat() if handle.finished_at else None,
+        "events": handle.events,
+        "leaderboard": handle.leaderboard,
+        "summary": summary,
+    }
+
+
+@app.get("/api/swarm/runs/{run_id}/events")
+async def swarm_events(run_id: str):
+    from sse_starlette.sse import EventSourceResponse
+
+    handle = swarm_module.get_run(run_id)
+    if handle is None:
+        raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
+
+    async def _generator():
+        async for evt in swarm_module.stream_events(run_id):
+            evt_type = evt.get("type", "message")
+            evt_data = evt.get("data", {})
+            yield {"event": evt_type, "data": json.dumps(evt_data)}
+
+    return EventSourceResponse(_generator())
+
+
+@app.delete("/api/swarm/runs/{run_id}")
+async def swarm_cancel(run_id: str) -> dict[str, bool]:
+    cancelled = await swarm_module.cancel_run(run_id)
+    if not cancelled:
+        handle = swarm_module.get_run(run_id)
+        if handle is None:
+            raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
+    return {"cancelled": cancelled}
+
+
+# ---------------------------------------------------------------------------
+# Frontend
+# ---------------------------------------------------------------------------
+
+# ── Sandbox CRUD (Step 4) ──
+
+class CreateSandboxRequest(BaseModel):
+    image: str = settings.SWARM_DEFAULT_IMAGE
+    timeout: int = 300  # seconds, min 60
+    entrypoint: list[str] = ["/bin/bash"]
+    runtime_class: str = "kata-vm-isolation"
+    cpu: str = "500m"
+    memory: str = "512Mi"
+    env: dict[str, str] = {}
+
+    @field_validator("timeout")
+    @classmethod
+    def _validate_timeout(cls, v: int) -> int:
+        if v < 60:
+            raise ValueError("timeout must be at least 60 seconds")
+        return v
+
+
+@app.post("/api/sandboxes", status_code=202)
+async def create_sandbox(req: CreateSandboxRequest) -> Any:
+    from .clients import ControlPlaneClient
+    cp = ControlPlaneClient(settings.CONTROL_PLANE_URL, settings.CONTROL_PLANE_API_KEY)
+    body = {
+        "image": {"uri": req.image},
+        "timeout": req.timeout,
+        "resourceLimits": {"cpu": req.cpu, "memory": req.memory},
+        "entrypoint": req.entrypoint,
+        "env": req.env,
+        "metadata": {"runtime_class": req.runtime_class, "created_via": "portal-v2"},
+    }
+    return await cp.create_sandbox(body)
+
+
+@app.delete("/api/sandboxes/{sandbox_id}")
+async def delete_sandbox(sandbox_id: str) -> Any:
+    from .clients import ControlPlaneClient
+    cp = ControlPlaneClient(settings.CONTROL_PLANE_URL, settings.CONTROL_PLANE_API_KEY)
+    return await cp.delete_sandbox(sandbox_id)
+
+
+# ── end Sandbox CRUD (Step 4) ──
+
+
 @app.get("/")
 async def index() -> FileResponse:
     index_file = _FRONTEND_DIST / "index.html"
@@ -151,3 +360,50 @@ async def index() -> FileResponse:
         return FileResponse(str(index_file))
     from fastapi.responses import HTMLResponse
     return HTMLResponse("<h1>DarkForge Portal</h1><p>Frontend dist not found.</p>")  # type: ignore[return-value]
+
+
+# -- Observability (Step 6) --
+
+@app.get("/api/pool/{name}")
+async def get_pool(name: str) -> dict:
+    """Return normalized Pool CR for the given pool name (e.g. kata)."""
+    from .clients import K8sClient
+    k8s = K8sClient(settings.OPENSANDBOX_NAMESPACE)
+    return await k8s.get_pool_cr(name)
+
+
+@app.get("/api/events")
+async def list_events(since: int = 300, limit: int = 50) -> dict:
+    """Return recent namespace events, newest-first."""
+    from .clients import K8sClient
+    k8s = K8sClient(settings.OPENSANDBOX_NAMESPACE)
+    events = await k8s.list_events(since_seconds=since, limit=limit)
+    return {"events": events, "count": len(events)}
+
+
+# ── Kimi chat (Step 5) ────────────────────────────────────────────────────────
+
+class KimiChatRequest(BaseModel):
+    messages: list[dict]  # OpenAI-style: [{"role": "user", "content": "..."}]
+    deployment: str | None = None  # e.g. "Kimi-K2.6"; None means walk the deployments tuple (K2.6 → K2.5)
+    max_tokens: int = 16000
+    temperature: float = 0.7
+
+
+@app.post("/api/kimi/chat")
+async def kimi_chat(req: KimiChatRequest) -> Any:
+    from .clients import KimiClient
+    kimi = KimiClient(
+        settings.KIMI_ENDPOINT,
+        settings.KIMI_DEPLOYMENTS,
+        settings.KIMI_API_VERSION,
+    )
+    result = await kimi.chat(
+        messages=req.messages,
+        deployment=req.deployment,
+        max_tokens=req.max_tokens,
+        temperature=req.temperature,
+    )
+    if "error" in result:
+        return JSONResponse(status_code=502, content=result)
+    return result

@@ -2,6 +2,10 @@
 
 FastAPI backend that joins the OpenSandbox control-plane with live Kubernetes data and serves the frontend.
 
+## Security
+
+> **⚠️ DEV ONLY — runs as YOU.** This portal uses the developer's local `az` session, kubeconfig, and API key file. It can start/stop the cluster, create/delete sandboxes, and call Kimi as the signed-in user. Do not expose it beyond `localhost` without reading [`docs/PORTAL-AUTH.md`](../../docs/PORTAL-AUTH.md).
+
 ## Prerequisites
 
 - Python 3.12+
@@ -35,6 +39,7 @@ Open http://localhost:8090 for the dashboard.
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/health` | Liveness check |
+| GET | `/api/identity` | Resolved az user, subscription, kubectx, namespace, key file presence |
 | GET | `/api/sandboxes` | List sandboxes with pod/node enrichment |
 | GET | `/api/cluster/summary` | Node and pod counts by pool |
 | GET | `/` | Serves frontend `index.html` |

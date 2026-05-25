@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "opensandbox-portal-api"
-version = "0.1.0"
+version = "0.2.0"
 description = "DarkForge Command Center — FastAPI portal API"
 requires-python = ">=3.12"
 dependencies = [
@@ -13,6 +13,8 @@ dependencies = [
     "pydantic-settings>=2.4",
     "httpx>=0.27",
     "kubernetes_asyncio>=31",
+    "sse-starlette>=2.1",
+    "anyio>=4.4",
 ]
 
 [tool.hatch.build.targets.wheel]
