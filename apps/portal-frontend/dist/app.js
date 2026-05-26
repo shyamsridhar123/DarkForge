@@ -411,6 +411,8 @@ function observabilityPanel() {
 function sandboxesTable() {
   return {
     rows: [],
+    _prevIds: [],
+    _userDeleted: new Set(),
     summary: {},
     init: function () {
       this.refresh();
@@ -418,15 +420,34 @@ function sandboxesTable() {
     },
     refresh: async function () {
       var d = await fetchJson('/api/sandboxes');
-      if (Array.isArray(d)) { this.rows = d; }
-      else if (d && d.sandboxes) { this.rows = d.sandboxes; }
+      var newRows = [];
+      if (Array.isArray(d)) { newRows = d; }
+      else if (d && d.sandboxes) { newRows = d.sandboxes; }
+
+      // P0-2: detect auto-expired sandboxes
+      if (this._prevIds.length > 0) {
+        var newIds = new Set(newRows.map(function (r) { return r.id; }));
+        this._prevIds.forEach((id) => {
+          if (!newIds.has(id) && !this._userDeleted.has(id)) {
+            showToast('Sandbox ' + id.slice(0, 8) + '… auto-expired', 'info');
+          }
+        });
+      }
+      this._prevIds = newRows.map(function (r) { return r.id; });
+      this.rows = newRows;
+
       var s = await fetchJson('/api/cluster/summary');
       if (!s.error) this.summary = s;
+    },
+    manualRefresh: async function () {
+      await this.refresh();
+      showToast('Sandboxes refreshed', 'info');
     },
     deleteRow: async function (id) {
       if (!id) return;
       var ok = await confirmModal('Delete sandbox?', 'Delete ' + id.substring(0, 12) + '...?');
       if (!ok) return;
+      this._userDeleted.add(id);
       var resp = await fetch('/api/sandboxes/' + id, { method: 'DELETE' });
       if (resp.ok) { showToast('Deleted', 'success'); this.refresh(); }
       else showToast('Delete failed', 'error');

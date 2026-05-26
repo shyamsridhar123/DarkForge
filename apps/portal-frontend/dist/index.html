@@ -284,10 +284,10 @@
       <header>
         <h2>&#128230; Sandboxes</h2>
         <span class="subtitle">
-          <span x-text="Array.isArray(rows) ? rows.length + ' total' : '—'">—</span>
-          <span class="dim"> · </span>
-          <span x-text="summary.sandboxes ? 'running: ' + (summary.sandboxes.running || 0) : ''">—</span>
+          <span x-text="Array.isArray(rows) ? rows.length + ' sandboxes' : '—'">—</span>
+          <span x-text="(summary.sandboxes && summary.sandboxes.kata_pods != null) ? ('&#xb7; ' + Math.max(0, (summary.sandboxes.kata_pods||0) - (rows||[]).length) + ' pool standby') : ''"></span>
         </span>
+        <button class="btn ghost small" style="margin-left:auto" x-on:click="manualRefresh()" title="Refresh sandboxes">&#8635;</button>
       </header>
       <div class="card-body">
         <table>
@@ -305,7 +305,7 @@
           </thead>
           <tbody>
             <template x-if="!Array.isArray(rows) || rows.length === 0">
-              <tr><td colspan="8" class="empty">No sandboxes.</td></tr>
+              <tr><td colspan="8" class="empty">No sandboxes yet. Click &#x27;Create Sandbox&#x27; above, or use Run Swarm / Kimi Chat &#x2192; Run in sandbox.</td></tr>
             </template>
             <template x-for="sb in (Array.isArray(rows) ? rows : [])" :key="sb.id">
               <tr>
