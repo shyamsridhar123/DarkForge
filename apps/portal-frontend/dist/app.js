@@ -1,4 +1,4 @@
-﻿// app.js -- DarkForge Command Center -- Alpine.js factories
+// app.js -- DarkForge Command Center -- Alpine.js factories
 // No bundler. All functions on window scope for Alpine auto-discovery.
 // No innerHTML / x-html. All dynamic text via x-text / textContent.
 
@@ -569,7 +569,7 @@ function sandboxesTable() {
         var newIds = new Set(newRows.map(function (r) { return r.id; }));
         this._prevIds.forEach((id) => {
           if (!newIds.has(id) && !this._userDeleted.has(id)) {
-            showToast('Sandbox ' + id.slice(0, 8) + '… auto-expired', 'info');
+            showToast('Sandbox ' + id.slice(0, 8) + ' auto-expired', 'info');
           }
         });
       }
@@ -595,65 +595,8 @@ function sandboxesTable() {
     formatAge: function (s) { return formatAge(s); }
   };
 }
-// ── P2-2: Global keyboard shortcuts ──���───────────────────────────────────────
-(function () {
-  var gPending = false;
-  var gTimer = null;
-  var cardMap = {
-    's': '.card-swarm',
-    'k': '.card-kimi-chat',
-    'c': '.card-cluster',
-    'o': '.card-observability',
-    'x': '.card-create-sandbox',
-    't': '.card-sandboxes-table'
-  };
 
-  function focusCard(sel) {
-    var el = document.querySelector(sel);
-    if (!el) return;
-    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    var focusable = el.querySelector('button, input, select, textarea, [tabindex]');
-    if (focusable) setTimeout(function () { focusable.focus(); }, 300);
-  }
-
-  document.addEventListener('keydown', function (e) {
-    // Ignore when typing in inputs
-    var tag = (e.target || {}).tagName || '';
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-
-    var key = e.key;
-
-    // Esc: close any open modal
-    if (key === 'Escape') {
-      document.getElementById('kbd-modal').style.display = 'none';
-      document.getElementById('modal-backdrop').style.display = 'none';
-      gPending = false; clearTimeout(gTimer);
-      return;
-    }
-
-    // ?: open cheatsheet
-    if (key === '?') {
-      document.getElementById('kbd-modal').style.display = 'flex';
-      return;
-    }
-
-    // g <letter>: navigate to card
-    if (gPending) {
-      clearTimeout(gTimer);
-      gPending = false;
-      if (cardMap[key]) { focusCard(cardMap[key]); }
-      return;
-    }
-    if (key === 'g') {
-      gPending = true;
-      gTimer = setTimeout(function () { gPending = false; }, 1500);
-    }
-  });
-})();
-
-// ── P2-3: URL hash routing ────────────────────────────────────────────────────
-// Push hash on swarm start or chat conversation; restore on load (best-effort).
-// Alpine factories call pushHash() when they have an ID to share.
+// URL hash routing
 function pushHash(type, id) {
   if (!id) return;
   history.replaceState(null, '', '#/' + type + '/' + id);
@@ -739,3 +682,15 @@ function historyPanel() {
     }
   };
 }
+
+// Explicitly expose Alpine factories on window so x-data="vncPanel()" resolves
+// even if a prior IIFE threw an exception and broke hoisting visibility.
+window.root = root;
+window.clusterPanel = clusterPanel;
+window.swarmPanel = swarmPanel;
+window.sandboxPanel = sandboxPanel;
+window.chatPanel = chatPanel;
+window.observabilityPanel = observabilityPanel;
+window.sandboxesTable = sandboxesTable;
+window.vncPanel = vncPanel;
+window.historyPanel = historyPanel;

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DarkForge Command Center</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=3">
 </head>
 <body x-data="root()">
 
@@ -530,29 +530,8 @@
     </div>
   </div>
 
-  <!-- P2-2: Keyboard shortcuts cheatsheet modal -->  <div class="modal-backdrop cheatsheet" id="kbd-modal" data-cheatsheet x-on:click.self="document.getElementById('kbd-modal').style.display='none'">
-    <div class="modal-dialog" style="min-width:380px">
-      <div class="modal-title">Keyboard Shortcuts</div>
-      <div class="modal-body">
-        <table style="width:100%;border-collapse:collapse">
-          <tr><td class="mono small" style="padding:4px 8px">?</td><td class="small dim">Open this cheatsheet</td></tr>
-          <tr><td class="mono small" style="padding:4px 8px">Esc</td><td class="small dim">Close modal</td></tr>
-          <tr><td class="mono small" style="padding:4px 8px">g s</td><td class="small dim">Go to Run Swarm</td></tr>
-          <tr><td class="mono small" style="padding:4px 8px">g k</td><td class="small dim">Go to Kimi Chat</td></tr>
-          <tr><td class="mono small" style="padding:4px 8px">g c</td><td class="small dim">Go to Cluster</td></tr>
-          <tr><td class="mono small" style="padding:4px 8px">g o</td><td class="small dim">Go to Observability</td></tr>
-          <tr><td class="mono small" style="padding:4px 8px">g x</td><td class="small dim">Go to Create Sandbox</td></tr>
-          <tr><td class="mono small" style="padding:4px 8px">g t</td><td class="small dim">Go to Sandboxes Table</td></tr>
-          <tr><td class="mono small" style="padding:4px 8px">Ctrl+Enter</td><td class="small dim">Send chat message</td></tr>
-        </table>
-      </div>
-      <div class="modal-actions">
-        <button class="btn ghost" x-on:click="document.getElementById('kbd-modal').style.display='none'">Close</button>
-      </div>
-    </div>
-  </div>
 
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=3"></script>
 </body>
 </html>

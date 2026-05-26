@@ -503,6 +503,14 @@ def test_p2_2():
     info = evaluate(check_js)
     passing = isinstance(info, dict) and bool(info.get("visible"))
     shot = screenshot("P2-2-after.png")
+    # CRITICAL: close the cheatsheet so it doesn't block subsequent tests
+    evaluate("""(() => {
+        const m = document.getElementById('kbd-modal');
+        if (m) m.style.display = 'none';
+        document.body.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
+        return true;
+    })()""")
+    time.sleep(0.3)
     return {
         "status": "pass" if passing else "fail",
         "evidence": [shot] if shot else [],
