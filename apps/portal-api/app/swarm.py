@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from . import history
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -213,6 +214,21 @@ def _drain_stdout(handle: RunHandle) -> None:
             handle.state,
             exit_code,
         )
+        # C3: upsert completed/failed row in history
+        try:
+            history.record_swarm_run(
+                run_id=handle.run_id,
+                n=handle.n,
+                model=handle.model,
+                image=handle.image,
+                started_at=int(handle.started_at.timestamp()),
+                ended_at=int(handle.finished_at.timestamp()),
+                state=handle.state,
+                summary=handle.summary,
+                leaderboard=handle.leaderboard if handle.leaderboard else None,
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +310,22 @@ async def start_run(
         _registry.pop(oldest_id, None)
 
     _registry[run_id] = handle
+
+    # C3: write initial "running" row to history
+    try:
+        history.record_swarm_run(
+            run_id=run_id,
+            n=n,
+            model=model,
+            image=resolved_image,
+            started_at=int(handle.started_at.timestamp()),
+            ended_at=None,
+            state="running",
+            summary=None,
+            leaderboard=None,
+        )
+    except Exception:  # noqa: BLE001
+        pass  # history failure must never break the run
 
     # Spin up background reader thread
     asyncio.create_task(_run_reader(handle))
@@ -399,4 +431,19 @@ async def cancel_run(run_id: str) -> bool:
     _push_event(handle, done_evt)
     handle.queue.put_nowait(None)
     logger.info("swarm run=%s cancelled", run_id)
+    # C3: upsert cancelled row in history
+    try:
+        history.record_swarm_run(
+            run_id=handle.run_id,
+            n=handle.n,
+            model=handle.model,
+            image=handle.image,
+            started_at=int(handle.started_at.timestamp()),
+            ended_at=int(handle.finished_at.timestamp()),
+            state="cancelled",
+            summary=handle.summary,
+            leaderboard=handle.leaderboard if handle.leaderboard else None,
+        )
+    except Exception:  # noqa: BLE001
+        pass
     return True

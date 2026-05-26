@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import tempfile
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,7 @@ from pydantic import BaseModel, field_validator
 
 from . import swarm as swarm_module
 from . import cluster_history
+from . import history
 from .clients import AzClient, ControlPlaneClient, K8sClient
 from .config import settings
 from .identity import resolve_identity
@@ -34,8 +36,43 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+async def _poll_sandbox_expiry() -> None:
+    """Background task: detect vanished sandboxes and record auto-expiry every 30 s."""
+    import asyncio as _asyncio
+
+    while True:
+        try:
+            await _asyncio.sleep(30)
+            cp = ControlPlaneClient(settings.CONTROL_PLANE_URL, settings.CONTROL_PLANE_API_KEY)
+            live_raw = await cp.list_sandboxes()
+            if not isinstance(live_raw, list):
+                continue
+            live_ids = {
+                str(sb.get("id") or sb.get("sandbox_id") or "")
+                for sb in live_raw
+                if isinstance(sb, dict)
+            }
+            live_ids.discard("")
+
+            tracked = history.list_sandbox_creations(limit=200)
+            now = int(time.time())
+            for row in tracked:
+                if row.get("expired_at") is not None:
+                    continue
+                sid = row.get("sandbox_id", "")
+                if sid and sid not in live_ids:
+                    history.record_sandbox_expiry(sid, now, "auto-expire")
+        except asyncio.CancelledError:
+            return
+        except Exception:  # noqa: BLE001
+            pass  # don't crash the loop on transient errors
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ANN001
+    # C3: initialise SQLite history store (idempotent)
+    history.init_db()
+
     identity = resolve_identity()
     key_status = "present" if identity["key_file_exists"] else "MISSING"
     sub = identity["az_subscription_name"] or "—"
@@ -57,7 +94,14 @@ async def lifespan(app: FastAPI):  # noqa: ANN001
         identity["cluster_namespace"],
         key_status,
     )
+
+    expiry_task = asyncio.create_task(_poll_sandbox_expiry())
     yield
+    expiry_task.cancel()
+    try:
+        await expiry_task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(title="DarkForge Portal API", version="0.2.0", lifespan=lifespan)
@@ -409,14 +453,48 @@ async def create_sandbox(req: CreateSandboxRequest) -> Any:
         "env": req.env,
         "metadata": {"runtime_class": req.runtime_class, "created_via": "portal-v2"},
     }
-    return await cp.create_sandbox(body)
+    created = await cp.create_sandbox(body)
+    # C3: record creation in history
+    if isinstance(created, dict) and not created.get("error"):
+        sb_id = str(created.get("id") or created.get("sandbox_id") or "")
+        if sb_id:
+            history.record_sandbox_creation(sb_id, req.image, req.runtime_class, int(time.time()))
+    return created
 
 
 @app.delete("/api/sandboxes/{sandbox_id}")
 async def delete_sandbox(sandbox_id: str) -> Any:
     from .clients import ControlPlaneClient
     cp = ControlPlaneClient(settings.CONTROL_PLANE_URL, settings.CONTROL_PLANE_API_KEY)
-    return await cp.delete_sandbox(sandbox_id)
+    result = await cp.delete_sandbox(sandbox_id)
+    # C3: record manual expiry
+    history.record_sandbox_expiry(sandbox_id, int(time.time()), "manual")
+    return result
+
+
+# ---------------------------------------------------------------------------
+# C3: History endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/history/chat")
+async def get_chat_history(conversation_id: str, limit: int = 100) -> list[dict]:
+    return history.list_chat_messages(conversation_id, limit=limit)
+
+
+@app.get("/api/history/chat/conversations")
+async def get_conversations() -> list[dict]:
+    return history.list_conversations()
+
+
+@app.get("/api/history/swarm")
+async def get_swarm_history(limit: int = 20) -> list[dict]:
+    return history.list_swarm_runs(limit=limit)
+
+
+@app.get("/api/history/sandbox")
+async def get_sandbox_history(limit: int = 50) -> list[dict]:
+    return history.list_sandbox_creations(limit=limit)
 
 
 # ── VNC sandbox (#18) ──
@@ -673,11 +751,23 @@ class KimiChatRequest(BaseModel):
     deployment: str | None = None  # e.g. "Kimi-K2.6"; None means walk the deployments tuple (K2.6 → K2.5)
     max_tokens: int = 16000
     temperature: float = 0.7
+    conversation_id: str | None = None  # C3: thread ID for history persistence
 
 
 @app.post("/api/kimi/chat")
 async def kimi_chat(req: KimiChatRequest) -> Any:
     from .clients import KimiClient
+
+    # C3: record the user turn; mint conversation_id if this is a new thread
+    last_user_text = ""
+    for m in reversed(req.messages):
+        if m.get("role") == "user":
+            last_user_text = str(m.get("content") or "")
+            break
+    cid = history.record_chat_turn(
+        req.conversation_id, "user", last_user_text, deployment=req.deployment
+    )
+
     kimi = KimiClient(
         settings.KIMI_ENDPOINT,
         settings.KIMI_DEPLOYMENTS,
@@ -691,4 +781,13 @@ async def kimi_chat(req: KimiChatRequest) -> Any:
     )
     if "error" in result:
         return JSONResponse(status_code=502, content=result)
-    return result
+
+    # C3: record the assistant reply
+    reply_content = ""
+    msg = result.get("message", {})
+    if isinstance(msg, dict):
+        reply_content = str(msg.get("content") or "")
+    used_deployment = result.get("deployment_used", req.deployment)
+    history.record_chat_turn(cid, "assistant", reply_content, deployment=used_deployment)
+
+    return {**result, "conversation_id": cid}
