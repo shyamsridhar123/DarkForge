@@ -60,7 +60,8 @@
           </div>
           <div class="meta-row">
             <span class="dim small">Last action</span>
-            <span class="mono small" x-text="state.last_action || '—'">—</span>
+            <span class="mono small"
+              x-text="state.last_action ? (state.last_action + (state.last_actor ? ' by ' + state.last_actor : '') + (state.last_action_at ? ' · ' + formatAge(Math.floor((Date.now()/1000) - new Date(state.last_action_at).getTime()/1000)) + ' ago' : '')) : '—'">—</span>
           </div>
         </div>
       </div>
