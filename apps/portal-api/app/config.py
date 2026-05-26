@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Repo root resolver: this file is apps/portal-api/app/config.py, so the repo
@@ -30,6 +31,18 @@ class Settings(BaseSettings):
     RESOURCE_GROUP: str = "rg-opensandbox-dev"
     CLUSTER_NAME: str = "aks-opensandbox-dev"
 
+    # ── C1: image registry + default sandbox images (single source of truth) ──
+    # Audit C-1 surfaced that ACR URI / VNC image / base sandbox image were
+    # scattered across config.py, kata-pool.yaml, hypothesis_swarm.py and the
+    # frontend defaults. Anyone rotating ACR had to edit three files.
+    # The portal-api is the canonical source — the frontend pulls these via
+    # GET /api/config. infra/* manifests still live in YAML (you can't
+    # @computed_field a Kubernetes manifest), but the API + SDK paths agree.
+    ACR_REGISTRY: str = "acropensandboxdemo7075.azurecr.io"
+    SANDBOX_BASE_IMAGE_PATH: str = "python:3.12-slim"
+    VNC_IMAGE_PATH: str = "opensandbox/desktop-vnc:latest"
+    DEFAULT_POOL_NAME: str = "kata"
+
     # Kimi / Foundry (used by /api/kimi/chat)
     KIMI_ENDPOINT: str = (
         "https://aihubeastus26267492086.cognitiveservices.azure.com"
@@ -48,12 +61,28 @@ class Settings(BaseSettings):
         _REPO_ROOT / ".venv-swarm" / "Scripts" / "python.exe"
     )
     SWARM_SCRIPT: Path = _REPO_ROOT / "examples" / "hypothesis_swarm.py"
-    SWARM_DEFAULT_IMAGE: str = (
-        "acropensandboxdemo7075.azurecr.io/python:3.12-slim"
-    )
 
     # Repo root (exposed for clients that need to resolve relative paths)
     REPO_ROOT: Path = _REPO_ROOT
+
+    # ── Computed image URIs ──
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def SANDBOX_BASE_IMAGE(self) -> str:
+        return f"{self.ACR_REGISTRY}/{self.SANDBOX_BASE_IMAGE_PATH}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def VNC_IMAGE(self) -> str:
+        return f"{self.ACR_REGISTRY}/{self.VNC_IMAGE_PATH}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def SWARM_DEFAULT_IMAGE(self) -> str:
+        # Kept for backwards compatibility with main.py / swarm.py callers
+        # that already reference SWARM_DEFAULT_IMAGE.
+        return self.SANDBOX_BASE_IMAGE
 
     def model_post_init(self, __context: object) -> None:
         if not self.CONTROL_PLANE_API_KEY:

@@ -94,6 +94,21 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/config")
+async def get_config() -> dict[str, Any]:
+    """Expose resolved configuration so the frontend never hardcodes
+    ACR URIs or default images (C1)."""
+    return {
+        "acr_registry": settings.ACR_REGISTRY,
+        "sandbox_base_image": settings.SANDBOX_BASE_IMAGE,
+        "vnc_image": settings.VNC_IMAGE,
+        "default_pool_name": settings.DEFAULT_POOL_NAME,
+        "opensandbox_namespace": settings.OPENSANDBOX_NAMESPACE,
+        "kimi_deployments": list(settings.KIMI_DEPLOYMENTS),
+        "control_plane_url": settings.CONTROL_PLANE_URL,
+    }
+
+
 @app.get("/api/identity")
 async def identity() -> dict[str, Any]:
     return resolve_identity()
@@ -402,6 +417,78 @@ async def delete_sandbox(sandbox_id: str) -> Any:
     from .clients import ControlPlaneClient
     cp = ControlPlaneClient(settings.CONTROL_PLANE_URL, settings.CONTROL_PLANE_API_KEY)
     return await cp.delete_sandbox(sandbox_id)
+
+
+# ── VNC sandbox (#18) ──
+
+class VncSandboxRequest(BaseModel):
+    image: str | None = None  # defaults to settings.VNC_IMAGE
+    timeout_s: int = 1800
+    runtime_class: str = "kata-vm-isolation"
+
+    @field_validator("timeout_s")
+    @classmethod
+    def _validate_timeout(cls, v: int) -> int:
+        if v < 60:
+            raise ValueError("timeout_s must be at least 60 seconds")
+        if v > 14400:  # 4h ceiling — these are heavyweight
+            raise ValueError("timeout_s must be at most 14400 seconds (4h)")
+        return v
+
+
+@app.post("/api/sandbox/vnc", status_code=202)
+async def create_vnc_sandbox(req: VncSandboxRequest) -> Any:
+    """Create a desktop sandbox running noVNC on port 6080. Response
+    includes the proxy URL the frontend can iframe directly."""
+    from .clients import ControlPlaneClient
+
+    image = req.image or settings.VNC_IMAGE
+    cp = ControlPlaneClient(settings.CONTROL_PLANE_URL, settings.CONTROL_PLANE_API_KEY)
+
+    # Entry-point left default — the VNC image's CMD owns the lifecycle
+    # (xvfb + window manager + noVNC). We just need the port exposed.
+    body = {
+        "image": {"uri": image},
+        "timeout": req.timeout_s,
+        # 4 GiB ceiling lets Chromium + a single tab run comfortably.
+        "resourceLimits": {"cpu": "2", "memory": "4Gi"},
+        "metadata": {
+            "runtime_class": req.runtime_class,
+            "created_via": "portal-v2-vnc",
+            "kind": "vnc-desktop",
+        },
+        # The control plane exposes 6080 via /v1/sandboxes/{id}/proxy/6080.
+        # Some control-plane builds require explicit portMap — declare it so
+        # the proxy is wired even on those builds. Newer builds ignore the
+        # field, which is harmless.
+        "portMap": [{"name": "novnc", "port": 6080, "protocol": "TCP"}],
+    }
+    created = await cp.create_sandbox(body)
+    if isinstance(created, dict) and "error" in created:
+        raise HTTPException(status_code=502, detail=created["error"])
+
+    sb_id = ""
+    if isinstance(created, dict):
+        sb_id = str(created.get("id") or created.get("sandbox_id") or "")
+    if not sb_id:
+        raise HTTPException(
+            status_code=502,
+            detail=f"control plane returned no sandbox id: {created!r}",
+        )
+
+    base = settings.CONTROL_PLANE_URL.rstrip("/")
+    vnc_url = f"{base}/v1/sandboxes/{sb_id}/proxy/6080/vnc.html?autoconnect=true&resize=remote"
+    return {
+        "sandbox_id": sb_id,
+        "vnc_url": vnc_url,
+        "image": image,
+        "timeout_s": req.timeout_s,
+        "raw": created,
+    }
+
+
+# ── end VNC sandbox (#18) ──
+
 
 
 # ── end Sandbox CRUD (Step 4) ──
