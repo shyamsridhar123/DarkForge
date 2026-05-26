@@ -385,7 +385,29 @@ main.grid {
 .card-sandboxes-table .card-body { max-height: 360px; overflow-y: auto; }
 .card-sandboxes-table table { width: 100%; }
 
-/* ── P0-4: Gauge provenance ── */
+/* ── P1-2: Toast action button ── */
+.toast-action-btn {
+  margin-left: 10px; padding: 2px 8px; border-radius: 4px;
+  background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.25);
+  color: inherit; font-size: 11px; font-weight: 600; cursor: pointer;
+}
+.toast-action-btn:hover { background: rgba(255,255,255,0.22); }
+
+/* ── P1-3: exec progress strip ── */
+.exec-progress-wrap {
+  display: flex; align-items: center; gap: 10px; padding: 4px 0;
+}
+.exec-progress-bar {
+  flex: 1; height: 6px; border-radius: 3px;
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--accent) 0px, var(--accent) 6px,
+    #1e1b4b 6px, #1e1b4b 12px
+  );
+  background-size: 24px 6px;
+  animation: stripe-move 0.6s linear infinite;
+}
+@keyframes stripe-move { to { background-position: 24px 0; } }
 .gauge-provenance { margin-top: 4px; font-size: 10px; text-align: center; }
 
 /* ── P0-5: Events feed full message ── */

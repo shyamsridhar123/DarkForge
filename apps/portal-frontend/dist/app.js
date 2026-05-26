@@ -54,13 +54,31 @@ function truncate(s, n) {
   return s.length > n ? s.substring(0, n) + '...' : s;
 }
 
-function showToast(text, kind) {
+function showToast(text, kind, opts) {
   kind = kind || 'info';
+  opts = opts || {};
+  var durationMs = opts.durationMs || 4000;
   var stack = document.getElementById('toast-stack');
   if (!stack) return;
-  var t = el('div', { cls: 'toast ' + kind, text: text });
+  var t = document.createElement('div');
+  t.className = 'toast ' + kind;
+  // Use textContent for main text (no XSS)
+  var msg = document.createElement('span');
+  msg.textContent = text;
+  t.appendChild(msg);
+  // P1-2: optional action button
+  if (opts.action) {
+    var btn = document.createElement('button');
+    btn.className = 'toast-action-btn';
+    btn.textContent = opts.action.label;
+    btn.addEventListener('click', function () {
+      opts.action.onClick();
+      try { stack.removeChild(t); } catch(x) {}
+    });
+    t.appendChild(btn);
+  }
   stack.appendChild(t);
-  setTimeout(function () { try { stack.removeChild(t); } catch(x) {} }, 4000);
+  setTimeout(function () { try { stack.removeChild(t); } catch(x) {} }, durationMs);
 }
 
 function confirmModal(title, message) {
@@ -281,7 +299,11 @@ function sandboxPanel() {
       this.submitting = false;
       if (resp.error) { showToast(resp.error, 'error'); return; }
       this.lastCreated = resp;
-      showToast('Sandbox created: ' + (resp.id || resp.sandbox_id || '(see table)'), 'success');
+      var sbId = resp.id || resp.sandbox_id || '';
+      showToast('Sandbox created: ' + sbId, 'success', {
+        durationMs: 8000,
+        action: sbId ? { label: 'Copy ID', onClick: function () { navigator.clipboard.writeText(sbId); } } : null
+      });
     }
   };
 }
@@ -336,12 +358,10 @@ function chatPanel() {
     },
     runInSandbox: async function (code) {
       if (!code) return;
-      // Scroll to bottom so result will be visible
       requestAnimationFrame(function () {
         var c = document.getElementById('chat-messages');
         if (c) c.scrollTop = c.scrollHeight;
       });
-      // Find the last assistant message whose content contains this code snippet
       var target = null;
       for (var i = this.messages.length - 1; i >= 0; i--) {
         if (this.messages[i].role === 'assistant' && (this.messages[i].content || '').indexOf(code) !== -1) {
@@ -350,14 +370,24 @@ function chatPanel() {
         }
       }
       if (target) {
-        target.exec = { running: true };
-        this.messages = this.messages.slice(); // trigger Alpine reactivity
+        target.exec = { running: true, elapsed_s: 0 };
+        this.messages = this.messages.slice();
       }
       showToast('Running in sandbox…', 'info');
+      var startedAt = Date.now();
+      var self = this;
+      // P1-3: elapsed counter while Kata VM boots
+      var progressTimer = setInterval(function () {
+        if (target && target.exec && target.exec.running) {
+          target.exec = Object.assign({}, target.exec, { elapsed_s: ((Date.now() - startedAt) / 1000).toFixed(0) });
+          self.messages = self.messages.slice();
+        }
+      }, 500);
       var resp = await postJson('/api/sandbox/exec', { code: code, timeout_s: 90 });
+      clearInterval(progressTimer);
       if (target) {
         target.exec = Object.assign({ running: false }, resp);
-        this.messages = this.messages.slice(); // trigger Alpine reactivity
+        this.messages = this.messages.slice();
       }
       if (resp.error) {
         showToast('✗ exec failed: ' + resp.error, 'error');
@@ -372,10 +402,31 @@ function chatPanel() {
       });
     },
     demoChartPrompt: function () {
-      this.input = "Write a Python snippet that uses matplotlib to plot sin(x) and cos(x) from 0 to 4π on the same axes, with a legend, title 'Demo: sin & cos', and grid. Just the code in a python fenced block — no explanation.";
+      this.input = 'Write a Python snippet that uses matplotlib to plot sin(x) and cos(x) from 0 to 4π on the same axes, with a legend, title 'Demo: sin & cos', and grid. Just the code in a python fenced block — no explanation.';
+    },
+    // P1-4: one-click sin/cos demo
+    demoSinCosStatus: '',
+    runSinCosDemo: async function () {
+      this.demoSinCosStatus = 'Sending prompt…';
+      this.input = 'Write a Python snippet that uses matplotlib to plot sin(x) and cos(x) from 0 to 4π on the same axes, with a legend, title 'Demo: sin & cos', and grid. Just the code in a python fenced block — no explanation.';
+      await this.send();
+      this.demoSinCosStatus = 'Waiting for reply…';
+      var deadline = Date.now() + 60000;
+      while (Date.now() < deadline) {
+        var last = this.messages[this.messages.length - 1];
+        if (last && last.role === 'assistant' && !last.busy) break;
+        await new Promise(function (r) { setTimeout(r, 300); });
+      }
+      var last2 = this.messages[this.messages.length - 1];
+      var code2 = last2 ? this.extractCode(last2.content) : null;
+      if (!code2) { this.demoSinCosStatus = 'No code found in reply.'; return; }
+      this.demoSinCosStatus = 'Running in sandbox…';
+      await this.runInSandbox(code2);
+      this.demoSinCosStatus = '';
     }
   };
 }
+
 
 // -- Observability card --
 function observabilityPanel() {

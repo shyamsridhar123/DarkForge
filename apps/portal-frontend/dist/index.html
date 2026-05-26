@@ -119,6 +119,12 @@
           </table>
         </div>
 
+        <!-- P1-1: empty hint when no live run and no saved results -->
+        <div class="empty small" x-show="!running && results.length === 0" style="padding:16px 0">
+          No active run. Pick N and click Run.
+          <span x-show="summary" x-text="summary ? ' Last: ' + (summary.passes || 0) + '/' + (summary.total || 0) + ' pass' : ''"></span>
+        </div>
+
         <!-- SSE log pane -->
         <div class="log-pane-wrap" x-show="log.length > 0">
           <pre class="log-pane" id="swarm-log-pane"><template x-for="line in log" :key="line"><span x-text="line + '\n'"></span></template></pre>
@@ -200,9 +206,16 @@
               </template>
               <template x-if="msg.exec">
                 <div class="exec-result" :class="msg.exec.running ? 'exec-running' : (msg.exec.error || msg.exec.exit_code !== 0 ? 'exec-failed' : 'exec-ok')">
-                  <div class="exec-header">
-                    <span class="exec-status" x-text="msg.exec.running ? 'running…' : (msg.exec.error ? 'error' : 'exit=' + (msg.exec.exit_code ?? '?'))">—</span>
-                    <span class="dim small" x-show="!msg.exec.running" x-text="msg.exec.duration_s ? msg.exec.duration_s + 's' : ''">—</span>
+                  <!-- P1-3: progress strip while Kata VM boots -->
+                  <template x-if="msg.exec.running">
+                    <div class="exec-progress-wrap">
+                      <div class="exec-progress-bar"></div>
+                      <span class="dim small" x-text="'Booting Kata VM… ' + (msg.exec.elapsed_s || 0) + 's'"></span>
+                    </div>
+                  </template>
+                  <div class="exec-header" x-show="!msg.exec.running">
+                    <span class="exec-status" x-text="msg.exec.error ? 'error' : 'exit=' + (msg.exec.exit_code ?? '?')">—</span>
+                    <span class="dim small" x-text="msg.exec.duration_s ? msg.exec.duration_s + 's' : ''">—</span>
                     <span class="dim small mono" x-show="msg.exec.sandbox_id" x-text="'sb=' + (msg.exec.sandbox_id || '').slice(0,8)">—</span>
                   </div>
                   <template x-if="msg.exec.chart_b64">
@@ -223,8 +236,9 @@
           </template>
         </div>
         <div class="chat-demo-row">
-          <button class="btn ghost small" x-on:click="demoChartPrompt()">📊 Demo: plot sin/cos</button>
-          <span class="dim small">Click → Send → 'Run in sandbox'</span>
+          <button class="btn ghost small" x-on:click="demoChartPrompt()">&#128202; Demo: plot sin/cos</button>
+          <button class="btn primary small" x-on:click="runSinCosDemo()" :disabled="busy">&#9654; Run sin/cos demo</button>
+          <span class="dim small" x-text="demoSinCosStatus || 'One click: prompt + run in sandbox'"></span>
         </div>
         <div class="chat-input-row">
           <textarea
