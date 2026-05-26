@@ -12,6 +12,7 @@
   <header class="topbar">
     <div class="brand">&#9875; DarkForge <span class="dim">Command Center</span></div>
     <div class="identity-chips">
+      <button class="btn ghost small" x-on:click="historyOpen = !historyOpen; if(historyOpen) $dispatch('history-open')" style="margin-right:4px">&#128196; History</button>
       <span class="chip identity">&#9651; DEV MODE</span>
       <span class="chip mono"
             :class="identity.az_user ? '' : 'chip-warn'"
@@ -262,7 +263,12 @@
     <article class="card card-observability" x-data="observabilityPanel()">
       <header>
         <h2>&#128200; Observability</h2>
-        <span class="subtitle">pool &middot; events</span>
+        <span class="subtitle" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <span>pool &middot; events</span>
+          <!-- C2: link-out chips -->
+          <a x-show="hubbleUrl" :href="hubbleUrl" target="_blank" rel="noopener" class="chip small" style="font-size:10px;text-decoration:none">Hubble UI &#8599;</a>
+          <a x-show="azMonitorUrl" :href="azMonitorUrl" target="_blank" rel="noopener" class="chip small" style="font-size:10px;text-decoration:none">Azure Monitor &#8599;</a>
+        </span>
       </header>
       <div class="card-body">
         <!-- Pool gauge -->
@@ -281,6 +287,13 @@
           </div>
           <!-- P0-4: provenance line -->
           <div class="dim small gauge-provenance" x-text="'Source: Pool CR ' + (pool.name || 'kata') + ' &middot; last polled ' + lastPolledAgo + 's ago'"></div>
+          <!-- C2: sparkline of available over last 60 ticks -->
+          <template x-if="sparkTicks.length >= 2">
+            <svg class="sparkline" viewBox="0 0 160 30" preserveAspectRatio="none" width="160" height="30">
+              <polyline :points="sparklinePath()" fill="none" stroke="var(--green)" stroke-width="1.5" stroke-linejoin="round"/>
+            </svg>
+          </template>
+          <div class="dim small" style="font-size:10px" x-show="sparkTicks.length >= 2">available — last <span x-text="sparkTicks.length"></span> polls</div>
         </div>
 
         <!-- Events feed -->
@@ -432,8 +445,73 @@
     </div>
   </div>
 
-  <!-- P2-2: Keyboard shortcuts cheatsheet modal -->
-  <div class="modal-backdrop" id="kbd-modal" style="display:none" x-on:click.self="document.getElementById('kbd-modal').style.display='none'">
+  <!-- C3: History slide-over panel -->
+  <div x-data="historyPanel()" x-on:history-open.window="load()">
+    <div class="history-drawer" :class="$root.historyOpen ? 'history-drawer-open' : ''" id="history-drawer">
+      <div class="history-drawer-header">
+        <div style="font-size:13px;font-weight:700">&#128196; History</div>
+        <div style="display:flex;gap:6px">
+          <button class="btn ghost small" :class="tab==='chat'?'btn-tab-active':''" x-on:click="tab='chat'">Chat</button>
+          <button class="btn ghost small" :class="tab==='swarm'?'btn-tab-active':''" x-on:click="tab='swarm'">Swarm</button>
+          <button class="btn ghost small" :class="tab==='sandbox'?'btn-tab-active':''" x-on:click="tab='sandbox'">Sandbox</button>
+        </div>
+        <button class="btn ghost small" x-on:click="$root.historyOpen=false">&#10005;</button>
+      </div>
+      <div class="history-drawer-body">
+        <div x-show="loading" class="dim small" style="padding:16px">Loading…</div>
+
+        <!-- Chat conversations -->
+        <template x-if="tab==='chat' && !loading">
+          <div>
+            <template x-if="chatConvs.length === 0">
+              <div class="empty small">
+                No chat history yet.
+                <!-- TODO: backend C3 GET /api/history/chat/conversations not ready -->
+              </div>
+            </template>
+            <template x-for="(c, i) in chatConvs" :key="c.conversation_id || i">
+              <div class="history-item">
+                <div class="mono small" x-text="truncate(c.conversation_id||'',16)">—</div>
+                <div class="dim small" x-text="(c.message_count||0) + ' msgs · ' + (c.last_message ? truncate(c.last_message,40) : '')">—</div>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- Swarm runs -->
+        <template x-if="tab==='swarm' && !loading">
+          <div>
+            <template x-if="swarmRuns.length === 0">
+              <div class="empty small">No swarm history yet.<!-- TODO: backend C3 GET /api/history/swarm --></div>
+            </template>
+            <template x-for="(r, i) in swarmRuns" :key="r.run_id || i">
+              <div class="history-item">
+                <div class="mono small" x-text="truncate(r.run_id||'',16)">—</div>
+                <div class="dim small" x-text="(r.passes||0) + '/' + (r.n||0) + ' pass · ' + (r.model||'')">—</div>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- Sandbox history -->
+        <template x-if="tab==='sandbox' && !loading">
+          <div>
+            <template x-if="sandboxHistory.length === 0">
+              <div class="empty small">No sandbox history yet.<!-- TODO: backend C3 GET /api/history/sandbox --></div>
+            </template>
+            <template x-for="(sb, i) in sandboxHistory" :key="sb.id || i">
+              <div class="history-item">
+                <div class="mono small" x-text="truncate(sb.id||'',16)">—</div>
+                <div class="dim small" x-text="(sb.status||'') + ' · ' + (sb.image ? truncate(sb.image,30) : '')">—</div>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </div>
+  </div>
+
+  <!-- P2-2: Keyboard shortcuts cheatsheet modal -->  <div class="modal-backdrop" id="kbd-modal" style="display:none" x-on:click.self="document.getElementById('kbd-modal').style.display='none'">
     <div class="modal-dialog" style="min-width:380px">
       <div class="modal-title">Keyboard Shortcuts</div>
       <div class="modal-body">

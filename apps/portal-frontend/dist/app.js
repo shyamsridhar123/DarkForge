@@ -114,6 +114,7 @@ setInterval(function () {
 function root() {
   return {
     identity: {},
+    historyOpen: false,
     init: function () { this.loadIdentity(); },
     loadIdentity: async function () {
       var d = await fetchJson('/api/identity');
@@ -437,8 +438,10 @@ function observabilityPanel() {
     lastPolledAt: null,
     lastPolledAgo: 0,
     _agoTimer: null,
-    // #19: pool slider values (initialised from pool CR on first fetch)
-    sliderPoolMin: 0,
+    // C2: sparkline history (last 60 ticks of pool.available)
+    sparkTicks: [],
+    hubbleUrl: null,
+    azMonitorUrl: null,
     sliderPoolMax: 10,
     sliderBufMin: 2,
     sliderBufMax: 4,
@@ -453,11 +456,24 @@ function observabilityPanel() {
       }, 1000);
     },
     refresh: async function () {
+      // C2: load link-out URLs from /api/config once
+      if (!this._configLoaded) {
+        this._configLoaded = true;
+        var cfg = await fetchJson('/api/config');
+        if (!cfg.error) {
+          this.hubbleUrl = cfg.HUBBLE_UI_URL || null;
+          this.azMonitorUrl = cfg.AZURE_MONITOR_URL || null;
+          // TODO: backend C1 — /api/config must expose HUBBLE_UI_URL and AZURE_MONITOR_URL
+        }
+      }
       var p = await fetchJson('/api/pool/kata');
       if (!p.error) {
         this.pool = p;
         this.lastPolledAt = Date.now();
         this.lastPolledAgo = 0;
+        // C2: accumulate sparkline ticks (max 60)
+        this.sparkTicks.push(p.available != null ? p.available : 0);
+        if (this.sparkTicks.length > 60) this.sparkTicks.shift();
         // sync sliders to live values on first load only (don't clobber user edits)
         if (!this._sliderInited) {
           this.sliderPoolMin = p.pool_min != null ? p.pool_min : 0;
@@ -469,6 +485,19 @@ function observabilityPanel() {
       }
       var e = await fetchJson('/api/events?since=600&limit=20');
       if (!e.error) this.events = e.events || [];
+    },
+    // C2: build SVG polyline path from sparkTicks
+    sparklinePath: function () {
+      var ticks = this.sparkTicks;
+      if (ticks.length < 2) return '';
+      var W = 160, H = 30;
+      var max = Math.max.apply(null, ticks) || 1;
+      var pts = ticks.map(function (v, i) {
+        var x = (i / (ticks.length - 1)) * W;
+        var y = H - (v / max) * H;
+        return x.toFixed(1) + ',' + y.toFixed(1);
+      });
+      return pts.join(' ');
     },
     gaugePercent: function () {
       var max = this.pool.pool_max || 1;
@@ -679,6 +708,33 @@ function vncPanel() {
       this.vncUrl = null;
       this.sandboxId = null;
       showToast('Desktop sandbox stopped', 'info');
+    }
+  };
+}
+
+// -- History panel (C3) --
+function historyPanel() {
+  return {
+    open: false,
+    tab: 'chat',       // 'chat' | 'swarm' | 'sandbox'
+    chatConvs: [],
+    swarmRuns: [],
+    sandboxHistory: [],
+    loading: false,
+    toggle: async function () {
+      this.open = !this.open;
+      if (this.open) await this.load();
+    },
+    load: async function () {
+      this.loading = true;
+      // C3: TODO — backend must ship these endpoints
+      var c = await fetchJson('/api/history/chat/conversations');
+      if (!c.error) this.chatConvs = Array.isArray(c) ? c : (c.conversations || []);
+      var s = await fetchJson('/api/history/swarm?limit=20');
+      if (!s.error) this.swarmRuns = Array.isArray(s) ? s : (s.runs || []);
+      var b = await fetchJson('/api/history/sandbox?limit=50');
+      if (!b.error) this.sandboxHistory = Array.isArray(b) ? b : (b.sandboxes || []);
+      this.loading = false;
     }
   };
 }
